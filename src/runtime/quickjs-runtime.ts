@@ -551,6 +551,204 @@ globalThis.setInterval = (callback, ms = 0) => {
 };
 globalThis.clearTimeout = (id) => { __timerCallbacks.delete(id); };
 globalThis.clearInterval = (id) => { __timerCallbacks.delete(id); };
+// Quality-pattern helpers. Pure guest-side compositions of the agent() and
+// parallel() globals (via the __workflowAgent / __workflowParallel closures) —
+// no new host bridge. All routing (model/tier/thinking) is threaded straight
+// through to agent() so host model selection is untouched, and every prompt is
+// model-agnostic by construction.
+const __qualityRouting = (opts) => {
+  const out = {};
+  if (opts) {
+    if (opts.model !== undefined) out.model = opts.model;
+    if (opts.tier !== undefined) out.tier = opts.tier;
+    if (opts.thinking !== undefined) out.thinking = opts.thinking;
+  }
+  return out;
+};
+const __clamp01 = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+};
+const __errorText = (error) =>
+  error && error.message !== undefined ? String(error.message) : String(error);
+const __verifySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { real: { type: "boolean" }, reason: { type: "string" } },
+  required: ["real"],
+};
+const verify = async (claim, opts = {}) => {
+  const options = opts || {};
+  const reviewers = Math.max(0, Math.floor(Number(options.reviewers ?? 3)));
+  const threshold = Number(options.threshold ?? 0.5);
+  const lenses = Array.isArray(options.lenses) && options.lenses.length > 0 ? options.lenses : null;
+  const routing = __qualityRouting(options);
+  const claimText = typeof claim === "string" ? claim : JSON.stringify(claim);
+  const thunks = [];
+  for (let i = 0; i < reviewers; i++) {
+    const lens = lenses ? lenses[i % lenses.length] : null;
+    thunks.push(async () => {
+      const prompt =
+        "You are an independent reviewer. Work hard to REFUTE the following claim: " +
+        "hunt for any way it could be false, unsupported, or misleading. " +
+        "When you are uncertain, default to NOT real. " +
+        (lens ? ("Focus on this failure mode: " + lens + ". ") : "") +
+        "Return structured output where real=true only if the claim survives your attempt to refute it." +
+        "\\n\\nClaim:\\n" + claimText;
+      const value = await __workflowAgent(prompt, { ...routing, label: "verify reviewer " + (i + 1), schema: __verifySchema });
+      return value && typeof value === "object" ? value.real === true : value === true;
+    });
+  }
+  const outcomes = await __workflowParallel(thunks.map((thunk) => async () => {
+    try { return { survived: true, yes: await thunk() }; }
+    catch { return { survived: false, yes: false }; }
+  }));
+  let surviving = 0;
+  let votes = 0;
+  for (const outcome of outcomes) {
+    if (!outcome.survived) continue;
+    surviving++;
+    if (outcome.yes) votes++;
+  }
+  const real = surviving > 0 && votes / surviving >= threshold;
+  return { real, votes, reviewers: surviving };
+};
+const judgePanel = async (attempts, opts = {}) => {
+  const options = opts || {};
+  const rubric = options.rubric;
+  if (rubric === undefined || rubric === null || rubric === "") {
+    throw new Error("judgePanel requires a rubric");
+  }
+  const list = Array.isArray(attempts) ? attempts : [];
+  const n = list.length;
+  const judges = Math.max(1, Math.floor(Number(options.judges ?? 3)));
+  const render = typeof options.render === "function" ? options.render : null;
+  const routing = __qualityRouting(options);
+  const rendered = list
+    .map((attempt, index) => {
+      const body = render ? render(attempt, index) : (typeof attempt === "string" ? attempt : JSON.stringify(attempt));
+      return "Attempt #" + index + ":\\n" + body;
+    })
+    .join("\\n\\n");
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      scores: { type: "array", items: { type: "number", minimum: 0, maximum: 1 } },
+    },
+    required: ["scores"],
+  };
+  const judgeThunks = [];
+  for (let j = 0; j < judges; j++) {
+    judgeThunks.push(async () => {
+      const prompt =
+        "You are an impartial judge. Score every attempt from 0 to 1 against the rubric below. " +
+        "Return a structured object whose \\"scores\\" array holds exactly " + n + " numbers, " +
+        "one per attempt, in the same order they are listed." +
+        "\\n\\nRubric:\\n" + rubric + "\\n\\nAttempts:\\n" + rendered;
+      const value = await __workflowAgent(prompt, { ...routing, label: "judge " + (j + 1), schema });
+      const raw = value && typeof value === "object" && Array.isArray(value.scores) ? value.scores : [];
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) out[i] = __clamp01(raw[i]);
+      return out;
+    });
+  }
+  const judgeScores = await __workflowParallel(judgeThunks);
+  const means = new Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < judgeScores.length; j++) sum += judgeScores[j][i];
+    means[i] = judgeScores.length > 0 ? sum / judgeScores.length : 0;
+  }
+  let index = -1;
+  for (let i = 0; i < n; i++) {
+    if (index === -1 || means[i] > means[index]) index = i;
+  }
+  return { index, mean: index >= 0 ? means[index] : 0, scores: means };
+};
+const loopUntilDry = async (opts = {}) => {
+  const options = opts || {};
+  const round = options.round;
+  const key = options.key;
+  if (typeof round !== "function") throw new Error("loopUntilDry requires a round function");
+  if (typeof key !== "function") throw new Error("loopUntilDry requires a key function");
+  const consecutiveEmpty = Math.max(1, Math.floor(Number(options.consecutiveEmpty ?? 2)));
+  const maxRounds = Math.max(0, Math.floor(Number(options.maxRounds ?? 8)));
+  const seen = new Set();
+  const items = [];
+  let rounds = 0;
+  let emptyStreak = 0;
+  while (rounds < maxRounds) {
+    let produced;
+    let threw = false;
+    try {
+      produced = await round(rounds);
+    } catch {
+      threw = true;
+    }
+    rounds++;
+    if (threw) continue; // a throwing round never touches the dry streak
+    const list = Array.isArray(produced) ? produced : [];
+    let fresh = 0;
+    for (const item of list) {
+      const k = String(key(item));
+      if (seen.has(k)) continue;
+      seen.add(k);
+      items.push(item);
+      fresh++;
+    }
+    if (fresh === 0) {
+      emptyStreak++;
+      if (emptyStreak >= consecutiveEmpty) return { items, rounds, dry: true };
+    } else {
+      emptyStreak = 0;
+    }
+  }
+  return { items, rounds, dry: false };
+};
+const gate = async (make, validate, opts = {}) => {
+  if (typeof make !== "function") throw new Error("gate requires a make function");
+  if (typeof validate !== "function") throw new Error("gate requires a validate function");
+  const options = opts || {};
+  const maxAttempts = Math.max(1, Math.floor(Number(options.attempts ?? 3)));
+  let feedback;
+  let lastCandidate = null;
+  let attempts = 0;
+  for (let i = 0; i < maxAttempts; i++) {
+    attempts++;
+    let candidate;
+    try {
+      candidate = await make(feedback, i);
+    } catch (error) {
+      feedback = __errorText(error);
+      continue;
+    }
+    lastCandidate = candidate;
+    let verdict;
+    try {
+      verdict = await validate(candidate, i);
+    } catch (error) {
+      feedback = __errorText(error);
+      continue;
+    }
+    if (verdict && verdict.ok) {
+      const ok = { ok: true, value: candidate, attempts };
+      if (verdict.feedback !== undefined) ok.feedback = verdict.feedback;
+      return ok;
+    }
+    feedback = verdict ? verdict.feedback : undefined;
+  }
+  const failed = { ok: false, value: lastCandidate, attempts };
+  if (feedback !== undefined) failed.feedback = feedback;
+  return failed;
+};
+globalThis.verify = verify;
+globalThis.judgePanel = judgePanel;
+globalThis.loopUntilDry = loopUntilDry;
+globalThis.gate = gate;
 })();
 `;
 
