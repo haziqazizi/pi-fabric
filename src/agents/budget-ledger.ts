@@ -13,12 +13,28 @@ import path from "node:path";
  * environment variables, which the worker forwards to child Pi processes via
  * `{ ...process.env }`.
  *
- * This mirrors ypi's RLM_BUDGET / RLM_COST_FILE model: the check is best-effort
- * (concurrent children can each pass the check before any cost lands, so a tree
- * may slightly overshoot), while the race-free ceiling remains the per-execution
- * call count (agents.maxPerExecution). Cost is recorded only after a child
- * finishes, matching ypi's append-after-completion semantics.
+ * This mirrors ypi's RLM_BUDGET / RLM_COST_FILE model, but closes the overshoot
+ * race with reserve-then-settle accounting. At spawn time the manager appends a
+ * `reservation` entry (an estimate) and only then re-reads the ledger; on
+ * completion it appends a `settlement` entry with the same `id`, which
+ * supersedes the reservation and records the actual cost. Because the pre-spawn
+ * check counts settled cost plus every outstanding reservation, concurrent
+ * spawns can no longer all pass the check before any cost lands.
+ *
+ * Ledger format (append-only JSONL, backward compatible):
+ *   - `kind: "reservation"` — an at-spawn estimate, superseded once its `id`
+ *     settles. Counted only while no settlement for the same `id` exists.
+ *   - `kind: "settlement"`  — the actual cost of a finished (or cancelled, at
+ *     cost 0) child. Supersedes any reservation with the same `id`.
+ *   - no `kind`             — a settled cost written by an older version; still
+ *     treated as a settlement so old ledgers read correctly.
+ *
+ * The race-free ceiling remains the per-execution call count
+ * (agents.maxPerExecution). Reservations bound the concurrency race; they do not
+ * make the estimate exact, so a tree can still overshoot by the estimation error.
  */
+
+export type BudgetLedgerEntryKind = "reservation" | "settlement";
 
 export interface BudgetLedgerEntry {
   id: string;
@@ -26,6 +42,8 @@ export interface BudgetLedgerEntry {
   cost: number;
   tokens: number;
   ts: number;
+  /** Absent entries are treated as settled costs written by older versions. */
+  kind?: BudgetLedgerEntryKind;
 }
 
 export interface BudgetLedgerSummary {
@@ -88,35 +106,63 @@ export function clearOwnedBudgetEnv(): void {
 }
 
 /**
- * Sum the append-only ledger. Malformed lines are tolerated, matching ypi's
- * rlm_cost parser: a single bad entry must not abort the whole read.
+ * Sum the append-only ledger under reserve-then-settle semantics: settled cost
+ * plus every reservation that has not yet been superseded by a settlement with
+ * the same `id`. Entries with no `kind` are treated as settlements so ledgers
+ * written by older versions read identically. Malformed lines are tolerated,
+ * matching ypi's rlm_cost parser: a single bad entry must not abort the read.
  */
 export function readBudgetLedger(file: string): BudgetLedgerSummary {
-  let cost = 0;
-  let tokens = 0;
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
   } catch {
-    return { cost, tokens };
+    return { cost: 0, tokens: 0 };
   }
+  const settled = new Map<string, { cost: number; tokens: number }>();
+  const reservations = new Map<string, { cost: number; tokens: number }>();
+  // Entries without an id cannot be correlated across reserve/settle; count
+  // them verbatim so a hand-written or legacy line is never silently dropped.
+  let anonymousCost = 0;
+  let anonymousTokens = 0;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line) as Partial<BudgetLedgerEntry>;
-      cost += Number(parsed.cost) || 0;
-      tokens += Number(parsed.tokens) || 0;
+      const cost = Number(parsed.cost) || 0;
+      const tokens = Number(parsed.tokens) || 0;
+      const id = typeof parsed.id === "string" ? parsed.id : undefined;
+      if (id === undefined) {
+        anonymousCost += cost;
+        anonymousTokens += tokens;
+      } else if (parsed.kind === "reservation") {
+        reservations.set(id, { cost, tokens });
+      } else {
+        // "settlement" or a legacy entry with no kind field.
+        settled.set(id, { cost, tokens });
+      }
     } catch {
       // Ignore malformed cost lines; the ledger is best-effort.
     }
+  }
+  let cost = anonymousCost;
+  let tokens = anonymousTokens;
+  for (const entry of settled.values()) {
+    cost += entry.cost;
+    tokens += entry.tokens;
+  }
+  for (const [id, entry] of reservations) {
+    if (settled.has(id)) continue; // superseded by an actual settlement
+    cost += entry.cost;
+    tokens += entry.tokens;
   }
   return { cost, tokens };
 }
 
 /**
- * Append a child's incurred cost to the shared ledger. O_APPEND makes small
- * single-line writes atomic across concurrent writers on POSIX, which is
- * sufficient because each manager appends one entry after a child settles.
+ * Append an entry to the shared ledger. O_APPEND makes small single-line writes
+ * atomic across concurrent writers on POSIX, which is sufficient because each
+ * manager appends one reservation at spawn time and one settlement afterwards.
  */
 export function appendBudgetLedger(file: string, entry: BudgetLedgerEntry): void {
   try {

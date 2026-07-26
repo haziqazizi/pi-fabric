@@ -75,6 +75,8 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "retainRuns": false,
     "notifyOnComplete": true,
     "budgetUsd": 0,
+    "budgetEnforcement": "soft",
+    "reserveEstimateUsd": 0.05,
     "maxTokensPerChild": 0
   },
   "ui": {
@@ -270,6 +272,8 @@ Other agent settings:
 - `extensions` — whether Claude children keep their normal Claude Code customizations.
 - `defaultTools` — the default tool allowlist for children.
 - `budgetUsd` — shared append-only cost ledger across a recursion tree (0 disables).
+- `budgetEnforcement` — `soft` (default) refuses new spawns once the budget is reached; `hard` additionally stops running children when settled + reserved cost reaches the budget.
+- `reserveEstimateUsd` — per-child cost reserved at spawn time and replaced by the actual cost on completion. This reserve-then-settle accounting closes the concurrent-spawn overshoot race; it need not be exact.
 - `maxTokensPerChild` — per-child cumulative token bound (0 disables).
 - `notifyOnComplete` — send a follow-up completion message for a detached `agents.spawn()`.
 

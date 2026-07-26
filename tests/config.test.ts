@@ -127,6 +127,21 @@ describe("Fabric configuration", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.budgetUsd).toBe(0);
   });
 
+  it("normalizes the budget enforcement mode and reservation estimate", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.budgetEnforcement).toBe("soft");
+    expect(DEFAULT_FABRIC_CONFIG.agents.reserveEstimateUsd).toBe(0.05);
+    const hard = normalizeFabricConfig({ agents: { budgetEnforcement: "hard" } });
+    expect(hard.agents.budgetEnforcement).toBe("hard");
+    const bogus = normalizeFabricConfig({ agents: { budgetEnforcement: "strict" } });
+    expect(bogus.agents.budgetEnforcement).toBe("soft");
+    const reserve = normalizeFabricConfig({ agents: { reserveEstimateUsd: 0.2 } });
+    expect(reserve.agents.reserveEstimateUsd).toBe(0.2);
+    const negative = normalizeFabricConfig({ agents: { reserveEstimateUsd: -1 } });
+    expect(negative.agents.reserveEstimateUsd).toBe(0);
+    const hugeReserve = normalizeFabricConfig({ agents: { reserveEstimateUsd: Number.MAX_VALUE } });
+    expect(hugeReserve.agents.reserveEstimateUsd).toBe(1_000_000);
+  });
+
   it("normalizes the agent default model and drops empty values", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.model).toBeUndefined();
     const set = normalizeFabricConfig({ agents: { model: "claude-sonnet-4-5" } });

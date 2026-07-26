@@ -62,7 +62,9 @@ const ACTOR_SCOPES = ["project", "session"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;
 const CORE_DEFAULT_TOOL_CANDIDATES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const BUDGET_ENFORCEMENT_MODES = ["soft", "hard"] as const;
 const BUDGET_VALUES = [0, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];
+const RESERVE_ESTIMATE_VALUES = [0, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1];
 const TOKEN_VALUES = [0, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000];
 const PREWALK_MODEL_UNSET_LABEL = "Ask each time";
 const ROOT_ITEM_IDS = [
@@ -858,6 +860,27 @@ export const buildFabricSettingsItems = (
               "Maximum USD spend for agent work across the whole recursion tree. 0 disables the budget.",
             ),
           }),
+          setting("agents.budgetEnforcement", "Budget enforcement", config.agents.budgetEnforcement, {
+            description:
+              "soft: refuse new spawns once the budget is reached. hard: also stop running children when settled + reserved cost reaches the budget.",
+            values: BUDGET_ENFORCEMENT_MODES,
+          }),
+          setting(
+            "agents.reserveEstimateUsd",
+            "Reserve estimate",
+            formatUsd(config.agents.reserveEstimateUsd),
+            {
+              description:
+                "Per-child cost reserved at spawn time, then replaced by the actual cost on completion. Closes the concurrent-spawn overshoot race; need not be exact.",
+              submenu: numericSubmenu(
+                theme,
+                RESERVE_ESTIMATE_VALUES,
+                formatUsd,
+                "Reserve estimate",
+                "Per-child cost reserved at spawn time, then replaced by the actual cost on completion.",
+              ),
+            },
+          ),
           setting("agents.maxTokensPerChild", "Token limit", formatTokens(config.agents.maxTokensPerChild), {
             description:
               "Maximum cumulative tokens a single agent may use before it is terminated (0 disables). Caps a runaway child before the host session compacts.",
