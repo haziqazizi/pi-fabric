@@ -39,7 +39,14 @@ Advanced multi-agent patterns as user-invoked skills, each a type-checked `fabri
 
 ## Install
 
-This is still pi-fabric. For the base runtime and its published package, see the [upstream README](https://github.com/monotykamary/pi-fabric). To run this fork's additions, clone this repo, build from source (`pnpm install`, then the package build scripts), and install the local extension into Pi.
+This is still pi-fabric — see the [upstream README](https://github.com/monotykamary/pi-fabric) for the base runtime and its published npm package.
+
+To run this fork's additions, install it straight from git. A `prepare` hook builds `dist/` on install, so there's no manual build step:
+
+- As a Pi extension: `pi install git:github.com/haziqazizi/pi-fabric`
+- As a pinned package dependency: `"pi-fabric": "git+https://github.com/haziqazizi/pi-fabric.git#<commit>"`
+
+The [pi-haziq](https://github.com/haziqazizi/pi-haziq) package wires it in this way, registering the whole `skills/` directory so `/skill:fabric-guide` and the patterns are user-invocable.
 
 ## Relationship to upstream
 
