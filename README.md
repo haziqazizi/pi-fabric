@@ -23,7 +23,7 @@ Six additions to the core runtime, each model-agnostic and test-covered (full su
 
 ## Skill patterns (`skills/`)
 
-Advanced multi-agent patterns as user-invoked skills, each a type-checked `fabric_exec` program. Invoke `/skill:fabric-guide` to have it recommend the smallest sufficient one.
+Advanced multi-agent patterns as user-invoked skills, each a type-checked `fabric_exec` program. Advanced patterns are user-invoked and are not advertised for automatic selection — only `fabric-exec` (the core reference) is model-invoked; the rest are user-opt-in (`disable-model-invocation: true`). Invoke `/skill:fabric-guide` to have it recommend the smallest sufficient one.
 
 - **fabric-workflow** — discover → fan-out → verify, with per-role effort routing and three-way (confirmed / plausible / refuted) verification verdicts
 - **fabric-council** — a reviewer panel differentiated *structurally* (different briefs, evidence, tools), not by persona labels
