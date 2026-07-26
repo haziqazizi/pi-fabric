@@ -108,3 +108,35 @@ await Promise.all([
     expect(result.error).toBe("Execution cancelled");
   });
 });
+
+describe("NodeProcessRuntime determinism guard", () => {
+  const guardMessage = "nondeterminism breaks journaled replay - pass values in via strings";
+
+  it("bans nondeterministic globals under a journalKey but allows explicit dates", async () => {
+    const banned = await new NodeProcessRuntime().execute(
+      "return Date.now();",
+      async () => undefined,
+      { ...options, journalKey: "orch-1" },
+    );
+    expect(banned.terminationReason).toBe("runtime_error");
+    expect(banned.error).toContain(guardMessage);
+
+    const explicit = await new NodeProcessRuntime().execute(
+      `return new Date("2020-01-02T03:04:05.000Z").toISOString();`,
+      async () => undefined,
+      { ...options, journalKey: "orch-1" },
+    );
+    expect(explicit.error).toBeUndefined();
+    expect(explicit.value).toBe("2020-01-02T03:04:05.000Z");
+  });
+
+  it("leaves globals untouched without a journalKey", async () => {
+    const result = await new NodeProcessRuntime().execute(
+      `return typeof Date.now() === "number" && new Date() instanceof Date;`,
+      async () => undefined,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(true);
+  });
+});

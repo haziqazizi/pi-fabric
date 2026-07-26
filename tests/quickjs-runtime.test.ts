@@ -799,3 +799,43 @@ return { done: true };
     expect(calls).toEqual(["agents.setEvents", "agents.setInstructions"]);
   });
 });
+
+describe("QuickJsRuntime determinism guard", () => {
+  const guardMessage = "nondeterminism breaks journaled replay - pass values in via strings";
+
+  it("bans Math.random, Date.now, and no-arg Date only when a journalKey is active", async () => {
+    for (const program of [
+      "return Math.random();",
+      "return Date.now();",
+      "return new Date().toISOString();",
+      "return Date();",
+    ]) {
+      const result = await new QuickJsRuntime().execute(program, async () => undefined, {
+        ...options,
+        journalKey: "orch-1",
+      });
+      expect(result.terminationReason).toBe("runtime_error");
+      expect(result.error).toContain(guardMessage);
+    }
+  });
+
+  it("still allows explicit Date construction under a journalKey", async () => {
+    const result = await new QuickJsRuntime().execute(
+      `return new Date("2020-01-02T03:04:05.000Z").toISOString();`,
+      async () => undefined,
+      { ...options, journalKey: "orch-1" },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe("2020-01-02T03:04:05.000Z");
+  });
+
+  it("leaves nondeterministic globals untouched without a journalKey", async () => {
+    const result = await new QuickJsRuntime().execute(
+      `return typeof Math.random() === "number" && typeof Date.now() === "number" && new Date() instanceof Date;`,
+      async () => undefined,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe(true);
+  });
+});

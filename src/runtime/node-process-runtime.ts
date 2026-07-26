@@ -182,6 +182,7 @@ export class NodeProcessRuntime {
         strings: options.strings ?? {},
         tokenBudget: options.tokenBudget,
         maxLogChars: options.maxLogChars ?? 100_000,
+        ...(options.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
       });
     });
   }

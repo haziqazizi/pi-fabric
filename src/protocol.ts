@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { FabricJournalStore } from "./journal/store.js";
 
 export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
@@ -118,6 +119,11 @@ export interface FabricInvocationContext {
   activity?(update: FabricInvocationActivityUpdate): void;
   /** Host-supplied inside fabric_exec so agents.handoff schedules the outer-call boundary. */
   deferHandoff?(args: Record<string, unknown>): Record<string, unknown>;
+  // Content-keyed replay journal, present only when the fabric_exec call opted
+  // in with a journalKey. Blocking one-shot agent runs (agents.run and the
+  // workflow agent() surface) reserve an entry key from the call's content and
+  // replay a hit instead of dispatching, or journal a fresh completed result.
+  journal?: FabricJournalStore;
   // Out-of-band image content blocks a provider (currently only pi.read of an
   // image file) wants attached to the call audit, so the single-call render can
   // re-attach them to the fabric_exec result content for pi core's kitty image
