@@ -85,3 +85,33 @@ For an explicit implementation handoff, `agents.handoff({ model, task?, when? })
 Agent requests and persistent actors accept `runner: "pi" | "claude"`. Pi is the default and is required for `recursive: true`, `rlm.query()`, and actors that must call Fabric or mesh APIs themselves. Claude invokes the official `claude -p` harness; it supports mapped Claude Code tools and host-managed persistent actors, but not recursive/direct Fabric APIs. Use `agents.models({ runner: "claude" })` for runtime-enumerated `claude/<value>` model keys.
 
 Omit `timeoutMs` for agents and actors unless requesting longer than the configured `agents.timeoutMs` (60 minutes by default). Per-call values below the configured default are ignored.
+
+## Quality-pattern helpers
+Four guest globals compose `agent()` and `parallel()` into reusable quality patterns. They add no new host call, are model-agnostic, and pass `model`/`tier`/`thinking` straight through to `agent()` so routing is unchanged.
+
+- `verify(claim, opts?)` → `{ real: boolean; votes: number; reviewers: number }`. `opts`: `{ reviewers=3, threshold=0.5, lenses?, model?, tier?, thinking? }`. Each reviewer independently tries to *refute* the claim and defaults to not-real when uncertain; `lenses` are distributed round-robin. Reviewer calls that throw are dropped from the denominator; zero survivors ⇒ `real: false`. `real = yesVotes / survivors >= threshold`.
+- `judgePanel(attempts, opts)` → `{ index: number; mean: number; scores: number[] }`. `opts`: `{ judges=3, rubric (required), render?, model?, tier?, thinking? }`. Each judge scores every attempt 0..1 (schema-validated). Winner is the highest mean; ties break to the lowest input index. `scores` are the per-attempt means.
+- `loopUntilDry(opts)` → `{ items: T[]; rounds: number; dry: boolean }`. `opts`: `{ round(i), key(t), consecutiveEmpty=2, maxRounds=8 }`. Each round is deduped against all previously seen keys. A round that *throws* never counts toward the dry streak; reaching `maxRounds` returns the partial result with `dry: false`. Never throws.
+- `gate(make, validate, opts?)` → `{ ok: boolean; value: T | null; attempts: number; feedback? }`. `opts`: `{ attempts=3 }`. `make(feedback, attemptIndex)` produces a candidate; `validate(value, attemptIndex)` returns `{ ok, feedback? }`; validator feedback threads into the next `make`. Exhaustion returns `{ ok: false, value: lastCandidate, attempts, feedback }` — it never throws and never reports false success.
+
+```ts
+const check = await verify("the config disables retries", { reviewers: 3, lenses: ["security", "performance"] });
+if (!check.real) log("unverified", check.votes, "/", check.reviewers);
+
+const drafts = ["draft A", "draft B", "draft C"];
+const best = await judgePanel(drafts, { rubric: "clarity and correctness", judges: 3 });
+const winner = drafts[best.index];
+
+const crawl = await loopUntilDry({
+  round: async (i) => agent<string[]>("List newly touched files, round " + i),
+  key: (file) => file,
+  consecutiveEmpty: 2,
+});
+
+const built = await gate(
+  (feedback) => agent<string>("Write a slug" + (feedback ? "; fix: " + feedback : "")),
+  (value) => ({ ok: value.length <= 40, feedback: "slug too long" }),
+  { attempts: 3 },
+);
+return { verified: check.real, winner, files: crawl.items.length, ok: built.ok };
+```

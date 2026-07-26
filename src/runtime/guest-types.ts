@@ -905,6 +905,60 @@ declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Prom
 declare function phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
+interface FabricVerifyOptions {
+  reviewers?: number;
+  threshold?: number;
+  lenses?: string[];
+  model?: string;
+  tier?: string;
+  thinking?: FabricThinking;
+}
+interface FabricVerifyResult {
+  real: boolean;
+  votes: number;
+  reviewers: number;
+}
+interface FabricJudgePanelOptions<T = unknown> {
+  judges?: number;
+  rubric: string;
+  render?: (attempt: T, index: number) => string;
+  model?: string;
+  tier?: string;
+  thinking?: FabricThinking;
+}
+interface FabricJudgePanelResult {
+  index: number;
+  mean: number;
+  scores: number[];
+}
+interface FabricLoopUntilDryOptions<T = unknown> {
+  round: (round: number) => Promise<T[]> | T[];
+  key: (item: T) => string;
+  consecutiveEmpty?: number;
+  maxRounds?: number;
+}
+interface FabricLoopUntilDryResult<T = unknown> {
+  items: T[];
+  rounds: number;
+  dry: boolean;
+}
+interface FabricGateValidation {
+  ok: boolean;
+  feedback?: string;
+}
+interface FabricGateOptions {
+  attempts?: number;
+}
+interface FabricGateResult<T = unknown> {
+  ok: boolean;
+  value: T | null;
+  attempts: number;
+  feedback?: string;
+}
+declare function verify(claim: string, opts?: FabricVerifyOptions): Promise<FabricVerifyResult>;
+declare function judgePanel<T = unknown>(attempts: T[], opts: FabricJudgePanelOptions<T>): Promise<FabricJudgePanelResult>;
+declare function loopUntilDry<T = unknown>(opts: FabricLoopUntilDryOptions<T>): Promise<FabricLoopUntilDryResult<T>>;
+declare function gate<T = unknown>(make: (feedback: string | undefined, attempt: number) => Promise<T> | T, validate: (value: T, attempt: number) => Promise<FabricGateValidation> | FabricGateValidation, opts?: FabricGateOptions): Promise<FabricGateResult<T>>;
 type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };
 declare const rlm: { query(args: FabricRlmRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
