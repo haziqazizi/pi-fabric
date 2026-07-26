@@ -25,6 +25,13 @@ export type FabricExecutorRuntime = "quickjs" | "node-process";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
 
+interface FabricLintConfig {
+  // LID lint (locally-in-distribution lint) surfaces advisory warnings for
+  // authored programs; it never blocks execution.
+  enabled: boolean;
+  maxInlinePromptChars: number;
+}
+
 interface FabricExecutorConfig {
   runtime: FabricExecutorRuntime;
   timeoutMs: number;
@@ -32,6 +39,7 @@ interface FabricExecutorConfig {
   maxOutputChars: number;
   maxNestedResultChars: number;
   resultFormat: FabricResultFormat;
+  lint: FabricLintConfig;
 }
 
 export interface FabricApprovalConfig {
@@ -212,6 +220,10 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxOutputChars: 100_000,
     maxNestedResultChars: 2_000_000,
     resultFormat: "auto",
+    lint: {
+      enabled: true,
+      maxInlinePromptChars: 8_000,
+    },
   },
   approvals: {
     read: "allow",
@@ -564,6 +576,18 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         executor.resultFormat,
         DEFAULT_FABRIC_CONFIG.executor.resultFormat,
       ),
+      lint: {
+        enabled: booleanValue(
+          objectValue(executor.lint).enabled,
+          DEFAULT_FABRIC_CONFIG.executor.lint.enabled,
+        ),
+        maxInlinePromptChars: boundedInteger(
+          objectValue(executor.lint).maxInlinePromptChars,
+          DEFAULT_FABRIC_CONFIG.executor.lint.maxInlinePromptChars,
+          100,
+          1_000_000,
+        ),
+      },
     },
     approvals: {
       read: approvalMode(approvals.read, DEFAULT_FABRIC_CONFIG.approvals.read),

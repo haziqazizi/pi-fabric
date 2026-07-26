@@ -1,5 +1,13 @@
 import path from "node:path";
 import ts from "typescript";
+import {
+  DEFAULT_LINT_OPTIONS,
+  lintFabricProgram,
+  type FabricLintOptions,
+  type FabricTypeWarning,
+} from "./lint.js";
+
+export type { FabricLintOptions, FabricTypeWarning } from "./lint.js";
 
 export interface FabricTypeError {
   line: number;
@@ -9,7 +17,14 @@ export interface FabricTypeError {
 
 export interface FabricTypeCheckResult {
   errors: FabricTypeError[];
+  // Advisory LID-lint findings. Never block execution; existing callers that
+  // only read `errors` are unaffected.
+  warnings: FabricTypeWarning[];
   javascript?: string;
+}
+
+export interface FabricTypeCheckOptions {
+  lint?: FabricLintOptions;
 }
 
 const compilerOptions: ts.CompilerOptions = {
@@ -105,7 +120,10 @@ class FabricTypeChecker {
     };
   }
 
-  check(code: string): FabricTypeCheckResult {
+  check(
+    code: string,
+    lint: FabricLintOptions = DEFAULT_LINT_OPTIONS,
+  ): FabricTypeCheckResult {
     this.#sourceText = `async function __piFabricMain() {\n${code}\n}\n`;
     this.#sourceFile = ts.createSourceFile(
       this.#guestFile,
@@ -138,13 +156,15 @@ class FabricTypeChecker {
         message,
       };
     });
-    if (errors.length > 0) return { errors };
+    // Lint reuses the already-parsed guest SourceFile (AST, not regex).
+    const warnings = lintFabricProgram(this.#sourceFile, lint);
+    if (errors.length > 0) return { errors, warnings };
 
     let javascript: string | undefined;
     program.emit(this.#sourceFile, (fileName, content) => {
       if (fileName.endsWith(".js")) javascript = content;
     });
-    return { errors, ...(javascript ? { javascript } : {}) };
+    return { errors, warnings, ...(javascript ? { javascript } : {}) };
   }
 }
 
@@ -179,4 +199,6 @@ export const transpileFabricCode = (code: string): string =>
 export const typeCheckFabricCode = (
   code: string,
   declarations: string,
-): FabricTypeCheckResult => checkerFor(declarations).check(code);
+  options?: FabricTypeCheckOptions,
+): FabricTypeCheckResult =>
+  checkerFor(declarations).check(code, options?.lint ?? DEFAULT_LINT_OPTIONS);

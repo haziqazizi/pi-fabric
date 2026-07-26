@@ -738,6 +738,18 @@ export const createFabricExecTool = (
         rawOutput || "(no output)",
         state.config.executor.maxOutputChars,
       );
+      // Advisory LID-lint findings, surfaced to the authoring model as
+      // clearly-marked non-fatal "lint:" lines so it can revise on the next
+      // turn. Warnings never fail the program or change `isError`.
+      const lintLines = (result.typeWarnings ?? []).map((warning) =>
+        warning.line > 0
+          ? `lint: Line ${warning.line}:${warning.column} — ${warning.message}`
+          : `lint: ${warning.message}`,
+      );
+      const appendLint = (text: string): string =>
+        lintLines.length > 0
+          ? `${text ? `${text}\n\n` : ""}${lintLines.join("\n")}`
+          : text;
       const terminate =
         pendingHandoff !== undefined ||
         (result.success &&
@@ -779,17 +791,18 @@ export const createFabricExecTool = (
         // swaps each image for its description on the LLM-bound clone, so the
         // text-only model still receives the description while the terminal
         // shows the kitty image.
-        const textOutput =
+        const textOutput = appendLint(
           singleAudit && mediaNote
             ? mediaNote
-            : (output === "(no output)" ? "" : output);
+            : (output === "(no output)" ? "" : output),
+        );
         if (textOutput) content.push({ type: "text", text: textOutput });
         for (const block of mediaBlocks) content.push(block);
         if (singleAudit && mediaNote) {
           singleAudit.result = mediaNote;
         }
       } else {
-        content.push({ type: "text", text: output });
+        content.push({ type: "text", text: appendLint(output) });
       }
       return {
         content,
