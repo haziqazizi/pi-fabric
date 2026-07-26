@@ -140,10 +140,15 @@ if (completed.length === 1) {
   };
 }
 
+// Prefer a judge outside the panel: a judge that generated one of the
+// candidates is biased toward its own output (self-enhancement bias).
 const judgeModel = explicitJudge ?? {
   key: completed[0].model,
   runner: completed[0].runner,
 };
+const judgeSharedModel = explicitJudge
+  ? completed.some((c) => c.model === explicitJudge.key)
+  : true; // the fallback judge is a panel member by construction
 await phase("Judge", { total: 1 });
 try {
   const analysis = await agent<FusionAnalysis>(
@@ -179,6 +184,9 @@ try {
     coverage,
     failures,
     analysis,
+    ...(judgeSharedModel
+      ? { judgeSharedModel: true, judgeNote: "Judge model also produced a panel response; discount comparisons involving that response." }
+      : {}),
   };
 } catch (error) {
   return {
@@ -192,7 +200,9 @@ try {
 }
 ```
 
-Choose distinct models by intent: strongest available, budget-balanced with a frontier judge, or similar-latency models for faster fan-out. The default panel size is three. Cost is N panel calls plus a judge when comparison is possible. Reserve `panel.length + 1` top-level agent calls. Concurrent calls can overshoot observational token/USD checks because usage settles afterward; those settings are not hard concurrent reservations.
+**Pick the judge from outside the panel whenever a suitable model exists** — pass it as `strings.judge`. A judge whose model produced one of the candidates favors its own output; the template falls back to the first completed panel member only when no explicit judge is given, and flags that case with `judgeSharedModel: true` in the result so the caller can discount ties involving that member's response.
+
+Choose distinct models by intent: strongest available, budget-balanced with a frontier judge, or similar-latency models for faster fan-out. The default panel size is three. When the Claude runner is installed, prefer panels that span **providers and runners**, not just model names — a model family shares training data and blind spots, so two models from one vendor are far more correlated than their names suggest; one cross-provider member catches classes of error the rest of the panel is jointly blind to. Cost is N panel calls plus a judge when comparison is possible. Reserve `panel.length + 1` top-level agent calls. Concurrent calls can overshoot observational token/USD checks because usage settles afterward; those settings are not hard concurrent reservations.
 
 Panel members and the judge are plain, non-recursive agents, so deliberation is one level. `bash` enables web access through local search/fetch commands and requires execute approval. Concurrency is capped by `agents.maxConcurrent`; inner calls otherwise inherit provider limits and use `thinking` for reasoning effort.
 

@@ -33,6 +33,7 @@ const inventory = await agent<{ items: string[] }>(
   {
     label: "inventory",
     tools: ["read", "grep", "find", "ls"],
+    thinking: "low", // discovery is mechanical — route effort to analysis and verification
     schema: {
       type: "object",
       properties: {
@@ -62,7 +63,7 @@ for (let offset = 0; offset < items.length; offset += batchSize) {
     batch.map((item) => async (): Promise<WorkOutcome> => {
       try {
         const finding = await agent(
-          `Analyze this bounded item with evidence: ${item}\n\nObjective:\n${π.task}`,
+          `Analyze this bounded item: ${item}\n\nObjective:\n${π.task}\n\nCite verbatim evidence from tool output for every claim; only report what you can point to evidence for, and mark anything unverified as unverified.`,
           {
             label: `analyze ${item}`.slice(0, 50),
             tools: ["read", "grep", "find", "ls"],
@@ -106,8 +107,8 @@ if (completed.length === 0) {
 await phase("Verify", { total: 1 });
 try {
   const result = await agent(
-    `Adversarially verify only these completed findings, remove unsupported claims, and do not infer anything about failed items.\n\nObjective:\n${π.task}\n\nFindings:\n${JSON.stringify(completed)}`,
-    { label: "verify synthesis", tools: ["read", "grep", "find", "ls"] },
+    `You are a verifier with fresh context; you did not produce these findings. For each completed finding, actively try to refute it: re-check its cited evidence against the actual files. Label each finding CONFIRMED (you reproduced its evidence), PLAUSIBLE (consistent with the code but not directly reproduced), or REFUTED (evidence wrong or missing — drop it). Do not force a binary call; PLAUSIBLE is a valid verdict the reader will hedge on. Do not infer anything about failed items. Return confirmed and plausible findings with their evidence, and list what you refuted and why.\n\nObjective:\n${π.task}\n\nFindings:\n${JSON.stringify(completed)}`,
+    { label: "verify synthesis", tools: ["read", "grep", "find", "ls"], thinking: "xhigh" },
   );
   await workflow.event({ message: "Verification complete", level: "success" });
   return {
@@ -127,6 +128,8 @@ try {
   };
 }
 ```
+
+Route effort per stage role via `thinking`: `low` for mechanical discovery, the default for analysis, `xhigh` for verification — the verifier is the gate everything else depends on, so it is the one place not to economize. For high-stakes findings, replace the single verifier with 2–3 refuters (`parallel`) and keep only findings a majority fail to refute. The verifier must always be a fresh context, never an agent that produced the findings.
 
 Adapt phases and tools to the request. For edits, partition path ownership or use `worktree: true`; never let concurrent workers edit the same files. Successful verification returns compact output; raw findings return only if verification fails. `partial` is usable and must not trigger an automatic whole-workflow rerun—retry only failed items when their coverage matters.
 

@@ -8,14 +8,21 @@ disable-model-invocation: true
 
 Use one `fabric_exec` call with bounded role fan-out. Choose three to five roles that disagree usefully rather than duplicating one another, such as correctness, security, operability, maintainability, and requirements skepticism.
 
+**A role label alone buys almost no diversity** — same model, same context, different sentence produces highly correlated reports. Give each role a structurally distinct assignment: a different question to answer, different files or evidence to start from, or a different toolset. Pass roles as `strings.roles`, a JSON array of either strings or `{role, brief?, tools?}` objects — `brief` is the role-specific framing/starting material, `tools` restricts or extends that member's toolset.
+
 ```ts
+type CouncilRole = { role: string; brief?: string; tools?: string[] };
 type CouncilOutcome =
   | { role: string; status: "completed"; report: string }
   | { role: string; status: "failed"; error: string };
 
-const roles = [...new Set(
-  (JSON.parse(π.roles) as string[]).map((role) => role.trim()).filter(Boolean),
-)];
+const parsed = JSON.parse(π.roles) as Array<string | CouncilRole>;
+const roles: CouncilRole[] = [];
+const seen = new Set<string>();
+for (const entry of parsed) {
+  const r = typeof entry === "string" ? { role: entry.trim() } : { ...entry, role: entry.role.trim() };
+  if (r.role && !seen.has(r.role)) { seen.add(r.role); roles.push(r); }
+}
 if (roles.length < 3 || roles.length > 5) {
   throw new Error("Council requires 3–5 distinct non-empty roles.");
 }
@@ -25,11 +32,13 @@ await workflow.configure({
 });
 await phase("Deliberate", { total: roles.length + 1 });
 const outcomes = await parallel(
-  roles.map((role) => async (): Promise<CouncilOutcome> => {
+  roles.map(({ role, brief, tools }) => async (): Promise<CouncilOutcome> => {
     try {
       const report = await agent(
-        `Act as the ${role} council member. Independently analyze this task:\n\n${π.task}`,
-        { label: role, tools: ["read", "grep", "find", "ls"] },
+        `You are the ${role} reviewer.\n` +
+          (brief ? `Your specific assignment: ${brief}\n` : "") +
+          `Independently analyze this task from that angle only — do not attempt overall coverage; other reviewers hold the other angles. Cite verbatim evidence from files or tool output for every material claim.\n\nTask:\n${π.task}`,
+        { label: role, tools: tools ?? ["read", "grep", "find", "ls"] },
       );
       return { role, status: "completed", report };
     } catch (error) {
