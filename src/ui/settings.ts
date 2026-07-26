@@ -468,7 +468,7 @@ class SectionSubmenu extends Container {
     this.addChild(new Spacer(1));
     this.settingsList = new SettingsList(
       items,
-      Math.min(items.length, 16),
+      Math.min(items.length, 20),
       settingsListTheme(theme),
       onChange,
       onCancel,
