@@ -40,7 +40,10 @@ import type {
   FabricSandboxTerminationReason,
 } from "./runtime/quickjs-runtime.js";
 import type { NodeProcessRuntime } from "./runtime/node-process-runtime.js";
-import type { FabricTypeError } from "./runtime/type-checker.js";
+import type {
+  FabricTypeError,
+  FabricTypeWarning,
+} from "./runtime/type-checker.js";
 
 let runtimeDependencies:
   | Promise<{
@@ -109,6 +112,9 @@ export interface FabricExecutionResult {
   trace: FabricExecutionTraceV1;
   elapsedMs: number;
   typeErrors?: FabricTypeError[];
+  // Advisory LID-lint findings; present on a successful check that produced
+  // warnings. Never affects `success`.
+  typeWarnings?: FabricTypeWarning[];
   error?: string;
   handoffRequest?: Record<string, unknown>;
   usage?: Usage;
@@ -159,6 +165,7 @@ export class FabricExecutionService {
     const checked = dependencies.typeCheckFabricCode(
       options.code,
       dependencies.guestTypeDeclarations(effectiveFullCodeMode),
+      { lint: this.config.executor.lint },
     );
     if (checked.errors.length > 0) {
       this.activity?.finish(options.parentToolCallId, false, "Type checking failed");
@@ -683,6 +690,7 @@ export class FabricExecutionService {
       phases,
       trace: traceRecorder.seal(runOutcome, phases, sandboxResult.error),
       elapsedMs: performance.now() - startedAt,
+      ...(checked.warnings.length > 0 ? { typeWarnings: checked.warnings } : {}),
       ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
       ...(handoffRequest ? { handoffRequest } : {}),
       ...(classifierUsages.length > 0
