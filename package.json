@@ -32,6 +32,7 @@
     "benchmark:memory-heads": "pnpm run build && node scripts/benchmark-memory-heads.mjs",
     "lint:dead": "knip --no-gitignore",
     "check": "pnpm run typecheck && pnpm run build && pnpm run test && pnpm run lint:dead",
+    "prepare": "tsc -p tsconfig.build.json",
     "prepack": "pnpm run check"
   },
   "keywords": [
