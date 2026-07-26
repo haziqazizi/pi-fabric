@@ -461,16 +461,18 @@ export class AgentManager {
       request.model ?? (runner === "claude" ? this.config.claude.model : this.config.model);
     if (runner === "claude" && model) normalizeClaudeModel(model);
     if (runner === "pi" && model) await this.#prepareModel(model);
-    if (this.#budget) {
-      const spent = readBudgetLedger(this.#budget.file).cost;
-      if (spent >= this.#budget.budget) {
-        throw new Error(
-          `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
-        );
-      }
-    }
-    const release = await this.#semaphore.acquire(signal);
     const id = randomUUID().replaceAll("-", "");
+    // Reserve-then-settle admission: append this spawn's estimate to the ledger
+    // and re-read before committing, so concurrent spawns cannot all pass the
+    // check before any cost lands. Rolled back below on any failure to spawn.
+    if (this.#budget) this.#admitBudget(id);
+    let release: () => void;
+    try {
+      release = await this.#semaphore.acquire(signal);
+    } catch (error) {
+      this.#cancelReservation(id);
+      throw error;
+    }
     const name = safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric agent");
     const runDirectory = path.join(this.#runRoot, id);
     fs.mkdirSync(runDirectory, { recursive: true });
@@ -508,6 +510,7 @@ export class AgentManager {
         worktree = lease.path;
       } catch (error) {
         release();
+        this.#cancelReservation(id);
         throw error;
       }
     }
@@ -654,6 +657,7 @@ export class AgentManager {
       return this.#handleInfo(managed, "running");
     } catch (error) {
       release();
+      this.#cancelReservation(id);
       if (worktree) await this.#worktrees.cleanup(id, true).catch(() => false);
       throw error;
     }
@@ -1077,6 +1081,8 @@ export class AgentManager {
     managed.release();
     managed.release = () => {};
     if (this.#budget) {
+      // Settle: this actual-cost entry supersedes the spawn-time reservation
+      // that shares result.id, replacing the estimate with the real cost.
       appendBudgetLedger(this.#budget.file, {
         id: result.id,
         depth: this.#currentDepth + 1,
@@ -1087,10 +1093,12 @@ export class AgentManager {
           result.usage.cacheRead +
           result.usage.cacheWrite,
         ts: Date.now(),
+        kind: "settlement",
       });
       this.#budgetSummaryCache = undefined;
       const summary = this.#budgetSummary();
       if (summary) result.budget = summary;
+      this.#enforceHardBudget();
     }
     const compactResult = compactUiRecord(result);
     managed.latestRecord = compactResult;
@@ -1197,6 +1205,74 @@ export class AgentManager {
     );
     if (runner === "pi" && request.recursive) tools.push("fabric_exec");
     return [...new Set(tools)];
+  }
+
+  // The pre-spawn reservation estimate. Pi is model-agnostic and this package
+  // ships no per-model price table, so we reserve a flat, configurable per-child
+  // amount (agents.reserveEstimateUsd). It need not be exact — only positive —
+  // to close the concurrent-spawn overshoot race; settlement later replaces it
+  // with the real cost. maxTokensPerChild could refine this once a price source
+  // exists, but we keep it simple and model-neutral for now.
+  #reserveEstimate(): number {
+    return Math.max(0, this.config.reserveEstimateUsd);
+  }
+
+  // Append this spawn's reservation, re-read the ledger, and reject the spawn if
+  // settled cost plus all outstanding reservations now exceeds the budget. On a
+  // hard-enforcement over-budget we also stop the children already running.
+  #admitBudget(id: string): void {
+    if (!this.#budget) return;
+    appendBudgetLedger(this.#budget.file, {
+      id,
+      depth: this.#currentDepth + 1,
+      cost: this.#reserveEstimate(),
+      tokens: 0,
+      ts: Date.now(),
+      kind: "reservation",
+    });
+    this.#budgetSummaryCache = undefined;
+    const committed = readBudgetLedger(this.#budget.file).cost;
+    if (committed > this.#budget.budget) {
+      this.#cancelReservation(id);
+      if (this.config.budgetEnforcement === "hard") {
+        this.#stopRunningForBudget();
+        throw new Error(
+          `Fabric recursion budget exhausted (hard enforcement): committed $${committed.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Running children were stopped; increase agents.budgetUsd to continue.`,
+        );
+      }
+      throw new Error(
+        `Fabric recursion budget exceeded: committed $${committed.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
+      );
+    }
+  }
+
+  // Supersede an outstanding reservation with a zero-cost settlement so a spawn
+  // that never ran does not permanently consume budget headroom.
+  #cancelReservation(id: string): void {
+    if (!this.#budget) return;
+    appendBudgetLedger(this.#budget.file, {
+      id,
+      depth: this.#currentDepth + 1,
+      cost: 0,
+      tokens: 0,
+      ts: Date.now(),
+      kind: "settlement",
+    });
+    this.#budgetSummaryCache = undefined;
+  }
+
+  // Hard enforcement: once settled + reserved reaches the budget, stop every
+  // still-running child through the normal stop path. No-op under soft mode.
+  #enforceHardBudget(): void {
+    if (!this.#budget || this.config.budgetEnforcement !== "hard") return;
+    if (readBudgetLedger(this.#budget.file).cost < this.#budget.budget) return;
+    this.#stopRunningForBudget();
+  }
+
+  #stopRunningForBudget(): void {
+    for (const managed of [...this.#runs.values()]) {
+      if (!managed.settled) void this.stop(managed.id).catch(() => undefined);
+    }
   }
 
   #budgetSummary(): FabricBudgetSummary | undefined {

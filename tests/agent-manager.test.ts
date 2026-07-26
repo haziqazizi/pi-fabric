@@ -11,6 +11,7 @@ import {
   AgentManager,
 } from "../src/agents/manager.js";
 import type { AgentRunRecord, AgentRunResult } from "../src/agents/types.js";
+import { appendBudgetLedger } from "../src/agents/budget-ledger.js";
 
 const managers: AgentManager[] = [];
 const roots: string[] = [];
@@ -820,7 +821,13 @@ describe("AgentManager", () => {
   it("enforces a cross-process cost budget across spawned agents", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0.1 };
+    // A small reservation estimate keeps sequential admission close to actual
+    // spend while still exercising reserve-then-settle bookkeeping.
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      budgetUsd: 0.1,
+      reserveEstimateUsd: 0.01,
+    };
     const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"),
       runRoot: root,
@@ -832,20 +839,97 @@ describe("AgentManager", () => {
     expect(first.usage.cost).toBeCloseTo(0.06);
     expect(first.budget).toBeDefined();
     expect(first.budget?.limit).toBe(0.1);
+    // The reservation has been superseded by the settled actual cost.
     expect(first.budget?.spent).toBeCloseTo(0.06);
     expect(first.budget?.remaining).toBeCloseTo(0.04);
 
-    // The check runs before the child lands its cost, so a tree may slightly
-    // overshoot (matching ypi's best-effort RLM_BUDGET semantics).
+    // Second admission: settled 0.06 + reservation 0.01 = 0.07 < 0.1, so it runs
+    // and then settles, landing the tree at 0.12 (estimation error, not a race).
     const second = await manager.run({ task: "COST 0.06", transport: "process" });
     expect(second.status).toBe("completed");
     expect(second.budget?.spent).toBeCloseTo(0.12);
     expect(second.budget?.remaining).toBe(0);
 
-    // A third call is rejected because the accumulated spend now meets the budget.
+    // A third call is rejected because settled 0.12 + its reservation exceeds
+    // the budget.
     await expect(manager.spawn({ task: "COST 0.06", transport: "process" })).rejects.toThrow(
       /budget exceeded/,
     );
+  });
+
+  it("stops running children and refuses spawns under hard budget enforcement", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
+    roots.push(root);
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      budgetUsd: 0.05,
+      reserveEstimateUsd: 0.01,
+      budgetEnforcement: "hard" as const,
+    };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    // Start a child that stays running until it is stopped.
+    const hang = await manager.spawn({ task: "HANG", transport: "process" });
+    expect(manager.status(hang.id).status).toBe("running");
+
+    // The manager owns the ledger at depth 0; push settled cost to the ceiling
+    // through the same cross-process file descendants inherit.
+    const ledgerFile = process.env.PI_FABRIC_BUDGET_FILE;
+    expect(ledgerFile).toBeDefined();
+    appendBudgetLedger(ledgerFile!, {
+      id: "external",
+      depth: 1,
+      cost: 0.05,
+      tokens: 0,
+      ts: Date.now(),
+      kind: "settlement",
+    });
+
+    // A new spawn is refused with the hard-enforcement error, and the refusal
+    // stops the child that was already running.
+    await expect(manager.spawn({ task: "second", transport: "process" })).rejects.toThrow(
+      /hard enforcement/,
+    );
+    const stopped = await manager.wait(hang.id);
+    expect(stopped.status).toBe("stopped");
+  });
+
+  it("keeps running children alive under soft budget enforcement", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
+    roots.push(root);
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      budgetUsd: 0.05,
+      reserveEstimateUsd: 0.01,
+      budgetEnforcement: "soft" as const,
+    };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const hang = await manager.spawn({ task: "HANG", transport: "process" });
+    const ledgerFile = process.env.PI_FABRIC_BUDGET_FILE;
+    expect(ledgerFile).toBeDefined();
+    appendBudgetLedger(ledgerFile!, {
+      id: "external",
+      depth: 1,
+      cost: 0.05,
+      tokens: 0,
+      ts: Date.now(),
+      kind: "settlement",
+    });
+
+    // Soft mode refuses new spawns but never stops the running child.
+    await expect(manager.spawn({ task: "second", transport: "process" })).rejects.toThrow(
+      /budget exceeded/,
+    );
+    expect(manager.status(hang.id).status).toBe("running");
   });
 
   it("inherits a budget ledger from the environment for recursive children", async () => {

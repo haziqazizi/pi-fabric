@@ -18,6 +18,7 @@ export type FabricAgentTransport =
   | "localterm"
   | "herdr";
 export type FabricAgentRunner = "pi" | "claude";
+export type FabricBudgetEnforcement = "soft" | "hard";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricExecutorRuntime = "quickjs" | "node-process";
@@ -76,6 +77,8 @@ export interface FabricAgentConfig {
   retainRuns: boolean;
   notifyOnComplete: boolean;
   budgetUsd: number;
+  budgetEnforcement: FabricBudgetEnforcement;
+  reserveEstimateUsd: number;
   maxTokensPerChild: number;
   maxSchemaRetries: number;
 }
@@ -230,6 +233,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     retainRuns: false,
     notifyOnComplete: true,
     budgetUsd: 0,
+    budgetEnforcement: "soft",
+    reserveEstimateUsd: 0.05,
     maxTokensPerChild: 0,
     maxSchemaRetries: 2,
   },
@@ -376,6 +381,11 @@ const stringValue = (value: unknown): string | undefined =>
 
 const runnerValue = (value: unknown, fallback: FabricAgentRunner): FabricAgentRunner =>
   value === "pi" || value === "claude" ? value : fallback;
+
+const budgetEnforcementValue = (
+  value: unknown,
+  fallback: FabricBudgetEnforcement,
+): FabricBudgetEnforcement => (value === "soft" || value === "hard" ? value : fallback);
 
 const transportValue = (
   value: unknown,
@@ -605,6 +615,16 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       budgetUsd: boundedFloat(
         agents.budgetUsd,
         DEFAULT_FABRIC_CONFIG.agents.budgetUsd,
+        0,
+        1_000_000,
+      ),
+      budgetEnforcement: budgetEnforcementValue(
+        agents.budgetEnforcement,
+        DEFAULT_FABRIC_CONFIG.agents.budgetEnforcement,
+      ),
+      reserveEstimateUsd: boundedFloat(
+        agents.reserveEstimateUsd,
+        DEFAULT_FABRIC_CONFIG.agents.reserveEstimateUsd,
         0,
         1_000_000,
       ),
