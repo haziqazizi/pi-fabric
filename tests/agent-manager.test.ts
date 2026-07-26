@@ -774,6 +774,154 @@ describe("AgentManager", () => {
     expect(result.model).toBeUndefined();
   });
 
+  it("inherits the parent session model AND thinking when a call omits both", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    // Invented provider/model strings — inheritance is model-agnostic and the
+    // full "provider/id" string carries the provider along with the model.
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "acme/foo-1",
+      parentThinking: "high",
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "Inherit model and thinking", transport: "process" });
+    expect(result.status).toBe("completed");
+    expect(result.model).toBe("acme/foo-1");
+    expect(result.thinking).toBe("high");
+  });
+
+  it("prefers the inherited parent model over the static config default", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    // inheritParentModel defaults on: parent wins over config.model/config.thinking.
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      model: "acme/config-1",
+      thinking: "low" as const,
+    };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "zorp/parent-2",
+      parentThinking: "xhigh",
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "Parent beats config", transport: "process" });
+    expect(result.model).toBe("zorp/parent-2");
+    expect(result.thinking).toBe("xhigh");
+  });
+
+  it("lets an explicit model and explicit thinking override parent inheritance", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "acme/foo-1",
+      parentThinking: "high",
+    });
+    managers.push(manager);
+    // A resolved tier arrives here as an already-set request.model (see
+    // agents-provider); an explicit request model/thinking always wins over the
+    // parent at this site.
+    const result = await manager.run({
+      task: "Explicit wins",
+      transport: "process",
+      model: "zorp/bar",
+      thinking: "minimal",
+    });
+    expect(result.model).toBe("zorp/bar");
+    expect(result.thinking).toBe("minimal");
+  });
+
+  it("restores the static config defaults when inheritParentModel is false", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      inheritParentModel: false,
+      model: "acme/config-1",
+      thinking: "low" as const,
+    };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "zorp/parent-2",
+      parentThinking: "xhigh",
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "No inheritance", transport: "process" });
+    expect(result.model).toBe("acme/config-1");
+    expect(result.thinking).toBe("low");
+  });
+
+  it("propagates a passed-down model so a nested level inherits it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    // A recursive worker is launched with --model, so the model the manager
+    // forwards to a child is exactly what that child's own AgentManager reads as
+    // its parent model. Model resolution at each level makes recursion automatic.
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "acme/root-1",
+      parentThinking: "high",
+    });
+    managers.push(manager);
+    // Child with no model inherits the root parent model.
+    const inherited = await manager.run({ task: "Child inherits", transport: "process" });
+    expect(inherited.model).toBe("acme/root-1");
+    // Child with an explicit model — this exact string is what is forwarded via
+    // --model and becomes the parent model its own nested children inherit.
+    const branched = await manager.run({
+      task: "Child overrides",
+      transport: "process",
+      model: "zorp/branch-2",
+    });
+    expect(branched.model).toBe("zorp/branch-2");
+    // Simulate the nested level: a manager whose parent model is the forwarded
+    // value resolves that same model for a grandchild that names none.
+    const nestedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(nestedRoot);
+    const nested = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: nestedRoot,
+      fullCodeMode: false,
+      parentModel: branched.model,
+      parentThinking: "high",
+    });
+    managers.push(nested);
+    const grandchild = await nested.run({ task: "Grandchild inherits", transport: "process" });
+    expect(grandchild.model).toBe("zorp/branch-2");
+  });
+
+  it("refreshes the inherited parent model through setParentModel", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+      parentModel: "acme/first-1",
+    });
+    managers.push(manager);
+    const before = await manager.run({ task: "Before switch", transport: "process" });
+    expect(before.model).toBe("acme/first-1");
+    // A mid-session model switch is picked up by subsequently spawned agents.
+    manager.setParentModel("zorp/second-2");
+    manager.setParentThinking("max");
+    const after = await manager.run({ task: "After switch", transport: "process" });
+    expect(after.model).toBe("zorp/second-2");
+    expect(after.thinking).toBe("max");
+  });
+
   it("notifies when a detached background agent completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

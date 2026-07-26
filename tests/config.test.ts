@@ -189,6 +189,17 @@ describe("Fabric configuration", () => {
     expect(nonString.agents.thinking).toBe("medium");
   });
 
+  it("defaults inheritParentModel to true and validates the value", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.inheritParentModel).toBe(true);
+    expect(normalizeFabricConfig({}).agents.inheritParentModel).toBe(true);
+    expect(
+      normalizeFabricConfig({ agents: { inheritParentModel: false } }).agents.inheritParentModel,
+    ).toBe(false);
+    expect(
+      normalizeFabricConfig({ agents: { inheritParentModel: "nope" } }).agents.inheritParentModel,
+    ).toBe(true);
+  });
+
   it("defaults and validates temporal retention windows", () => {
     expect(DEFAULT_FABRIC_CONFIG.retention).toEqual({
       orphanedTempRunMs: 6 * 60 * 60 * 1_000,

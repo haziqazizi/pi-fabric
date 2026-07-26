@@ -693,6 +693,21 @@ describe("AgentsProvider runner support", () => {
     );
   });
 
+  it("does not inherit the caller's model when inheritParentModel is off", async () => {
+    const { provider } = setup([], [], {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      inheritParentModel: false,
+    });
+    const ctx = catalogContext({ model: { provider: "novau", id: "default-thing" } });
+    // With inheritance off and no config default, a call that names neither a
+    // model nor a tier forwards no model (the runner's own default is used).
+    expect(await resolvedModel(provider, ctx, { task: "t", transport: "process" })).toBeUndefined();
+    // A tier still resolves normally when inheritance is off.
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "big", transport: "process" })).toBe(
+      "quux/baz-large",
+    );
+  });
+
   it("attaches the final preview for actors that settle before the first poll", async () => {
     const { provider } = setup();
     const actor = (await provider.invoke("create", createRequest, context)) as { id: string };
