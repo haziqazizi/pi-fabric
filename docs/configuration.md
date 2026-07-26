@@ -265,6 +265,7 @@ Fabric worker processes are JavaScript modules launched by a JS runtime. When Pi
 Other agent settings:
 
 - `thinking` — default reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), default `medium`.
+- `inheritParentModel` — when `true` (default), a spawned Pi agent that resolves no more specific model (no explicit `model`, no `tier`) inherits the parent session's active model instead of falling back to `model`; its thinking level is likewise inherited unless the call sets one. Precedence is unchanged: explicit `model` > `tier` > inherited parent model > `model`. Because each level reads its own live session model, inheritance propagates recursively to nested agents. Set `false` to restore the static `model`/`thinking` defaults. Claude-runner agents never inherit a Pi model string and always use `agents.claude.model`.
 - `maxConcurrent` — global child concurrency semaphore.
 - `maxPerExecution` — hard cap on children per `fabric_exec` invocation.
 - `maxDepth` — recursion depth bound for `rlm.query()`.

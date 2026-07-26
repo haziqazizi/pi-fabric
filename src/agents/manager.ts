@@ -12,6 +12,7 @@ import {
   type FabricAgentTransport,
   type FabricRetentionConfig,
 } from "../config.js";
+import type { FabricThinking } from "../thinking.js";
 import {
   discoverClaudeModels,
   mapClaudeTools,
@@ -324,6 +325,15 @@ export class AgentManager {
   readonly #piModelPreparations = new Map<string, Promise<void>>();
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
+  // The host/parent Pi session's active model and thinking level, captured from
+  // the Pi ExtensionContext at each level. At depth 0 this is the main session's
+  // active model; a recursively-spawned worker is launched with --model/--thinking
+  // (see workerArguments), so its own live session model becomes the parent for
+  // its children — making inheritance propagate recursively without threading
+  // depth. Refreshed via setParentModel/setParentThinking so a mid-session model
+  // or thinking switch is seen by subsequently spawned agents.
+  #parentModel: string | undefined;
+  #parentThinking: FabricThinking | undefined;
   readonly #uiListeners = new Set<() => void>();
   #retentionTimer: NodeJS.Timeout | undefined;
   #retentionSweep: Promise<void> | undefined;
@@ -354,6 +364,8 @@ export class AgentManager {
       onBackgroundComplete?: (result: AgentRunResult) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string) => Promise<void>;
+      parentModel?: string | undefined;
+      parentThinking?: FabricThinking | undefined;
     } = {},
   ) {
     this.#semaphore = new Semaphore(config.maxConcurrent);
@@ -371,6 +383,8 @@ export class AgentManager {
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
+    this.#parentModel = options.parentModel;
+    this.#parentThinking = options.parentThinking;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#mainAgentId =
@@ -429,6 +443,22 @@ export class AgentManager {
     }
   }
 
+  // Refresh the captured parent-session active model. Called with the live Pi
+  // session model so agents spawned next inherit it when agents.inheritParentModel
+  // is on. The host refreshes it on activity and each dispatch refreshes it from
+  // the fresh invocation context, so a mid-session model switch is picked up; a
+  // recursive worker's session model is fixed by the --model it launched with.
+  setParentModel(model: string | undefined): void {
+    this.#parentModel = model;
+  }
+
+  // Refresh the captured parent-session thinking level. Sourced from the Pi
+  // ExtensionAPI (getThinkingLevel) by the host, since it is not exposed on the
+  // per-invocation ExtensionContext.
+  setParentThinking(thinking: FabricThinking | undefined): void {
+    this.#parentThinking = thinking;
+  }
+
   subscribeUi(listener: () => void): () => void {
     this.#uiListeners.add(listener);
     return () => this.#uiListeners.delete(listener);
@@ -457,8 +487,19 @@ export class AgentManager {
     }
     const tools = this.#childTools(request, runner);
     if (runner === "claude") mapClaudeTools(tools);
+    // Model precedence tail (opts.model / opts.tier / agentType / per-phase model
+    // are already resolved into request.model before this point): explicit
+    // request model wins; otherwise, for Pi agents, inherit the parent session's
+    // active model when agents.inheritParentModel is on and one is available;
+    // otherwise fall back to the static config default. Claude agents never
+    // inherit a Pi model string — they use their independent config.claude.model.
     const model =
-      request.model ?? (runner === "claude" ? this.config.claude.model : this.config.model);
+      request.model ??
+      (runner === "claude"
+        ? this.config.claude.model
+        : this.config.inheritParentModel && this.#parentModel
+          ? this.#parentModel
+          : this.config.model);
     if (runner === "claude" && model) normalizeClaudeModel(model);
     if (runner === "pi" && model) await this.#prepareModel(model);
     const id = randomUUID().replaceAll("-", "");
@@ -528,7 +569,14 @@ export class AgentManager {
         this.config.timeoutMs,
         request.timeoutMs,
       );
-      const thinking = request.thinking ?? this.config.thinking;
+      // Same precedence as model: explicit request thinking wins; otherwise
+      // inherit the parent session's thinking level when inheritParentModel is on
+      // and one was captured; otherwise the static config default.
+      const thinking =
+        request.thinking ??
+        (this.config.inheritParentModel && this.#parentThinking
+          ? this.#parentThinking
+          : this.config.thinking);
       const recursive = runner === "pi" && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
       const workerArguments = [

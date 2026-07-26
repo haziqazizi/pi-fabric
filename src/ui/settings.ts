@@ -819,6 +819,16 @@ export const buildFabricSettingsItems = (
               "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. Clamped to each model's supported levels (next highest if unsupported).",
             submenu: thinkingSubmenu(theme),
           }),
+          setting(
+            "agents.inheritParentModel",
+            "Inherit parent model",
+            config.agents.inheritParentModel ? "true" : "false",
+            {
+              description:
+                "When on (default), a spawned Pi agent with no explicit model/tier or thinking inherits this session's active model and thinking level instead of the static defaults above. Propagates recursively to nested agents.",
+              values: BOOLEANS,
+            },
+          ),
           setting("agents.maxConcurrent", "Max concurrent", String(config.agents.maxConcurrent), {
             description: "Maximum number of agents that may run at the same time.",
             submenu: numericSubmenu(

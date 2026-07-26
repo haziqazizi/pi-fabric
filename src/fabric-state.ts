@@ -29,6 +29,7 @@ import type {
   FabricParticipantRecord,
   FabricPeerInfo,
 } from "./topology/types.js";
+import { isFabricThinking, type FabricThinking } from "./thinking.js";
 import { PrewalkController } from "./prewalk/controller.js";
 import {
   claimFabricHandoff,
@@ -379,6 +380,13 @@ export class FabricState {
       hostId,
       identityId: identity.id,
       retention: this.#config.retention,
+      // Capture the host/parent Pi session's active model and thinking level so
+      // spawned agents can inherit them when agents.inheritParentModel is on. At
+      // depth 0 this is the main session; a recursive worker launched with
+      // --model/--thinking reads its own live session here, so inheritance
+      // propagates recursively. Refreshed on activity in noteMainActivity.
+      parentModel: this.#parentModel(context),
+      parentThinking: this.#parentThinking(),
       preparePiModel: async (modelKey) => {
         const separator = modelKey.indexOf("/");
         if (separator <= 0 || separator === modelKey.length - 1) return;
@@ -586,6 +594,27 @@ export class FabricState {
   noteMainActivity(context: ExtensionContext): void {
     this.#actors?.noteMainActivity(context.isIdle());
     this.#participants?.scheduleRefresh();
+    // Keep the AgentManager's inherited parent defaults current so a mid-session
+    // model or thinking switch is picked up by subsequently spawned agents.
+    this.#agents?.setParentModel(this.#parentModel(context));
+    this.#agents?.setParentThinking(this.#parentThinking());
+  }
+
+  // The parent Pi session's active model as a "provider/id" key, or undefined
+  // when no model is active. Read live from the Pi ExtensionContext.
+  #parentModel(context: ExtensionContext): string | undefined {
+    return context.model ? `${context.model.provider}/${context.model.id}` : undefined;
+  }
+
+  // The parent Pi session's active thinking level, when it is a recognized
+  // Fabric thinking value. Read live from the Pi ExtensionAPI.
+  #parentThinking(): FabricThinking | undefined {
+    try {
+      const level = this.pi.getThinkingLevel();
+      return isFabricThinking(level) ? level : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   dispatchHostEvent(

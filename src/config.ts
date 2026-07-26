@@ -87,6 +87,14 @@ export interface FabricAgentConfig {
   tiers?: FabricModelTierOverrides;
   claude: FabricClaudeRunnerConfig;
   thinking: FabricThinking;
+  /**
+   * When true (default), a spawned Pi agent that resolves no more specific
+   * model/thinking inherits the parent session's active model and thinking
+   * level instead of falling back to `model`/`thinking`. Propagates
+   * recursively: each nested worker reads its own live session model. Set false
+   * to restore the static `model`/`thinking` defaults.
+   */
+  inheritParentModel: boolean;
   maxConcurrent: number;
   maxPerExecution: number;
   maxDepth: number;
@@ -247,6 +255,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     transport: "process",
     claude: { binary: "claude" },
     thinking: DEFAULT_FABRIC_THINKING,
+    inheritParentModel: true,
     maxConcurrent: 4,
     maxPerExecution: 100,
     maxDepth: 2,
@@ -630,6 +639,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         ...(claudeModel ? { model: claudeModel } : {}),
       },
       thinking: agentThinking,
+      inheritParentModel: booleanValue(
+        agents.inheritParentModel,
+        DEFAULT_FABRIC_CONFIG.agents.inheritParentModel,
+      ),
       maxConcurrent: boundedInteger(
         agents.maxConcurrent,
         DEFAULT_FABRIC_CONFIG.agents.maxConcurrent,

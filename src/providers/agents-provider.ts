@@ -709,12 +709,21 @@ const runRequest = (
   const tools = stringArray(args.tools);
   const timeoutMs = longerTimeoutOverride(args.timeoutMs, manager);
   const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
-  const inheritedModel =
-    runner === "pi" && !manager.config.model && context.extensionContext.model
+  // Refresh the manager's captured parent model from this dispatch's live Pi
+  // session so inheritance (agents.inheritParentModel) reflects the model active
+  // right now. The manager applies it as the default when neither an explicit
+  // model nor a tier resolves one. Reading the current session model at each
+  // level is what makes inheritance propagate recursively to nested agents.
+  manager.setParentModel(
+    context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
-      : undefined;
-  // Resolution precedence: explicit model > tier > current default. Tier only
-  // applies to the pi catalog and only when no explicit model was given.
+      : undefined,
+  );
+  // Resolution precedence: explicit model > tier > (manager default). Tier only
+  // applies to the pi catalog and only when no explicit model was given. When
+  // neither an explicit model nor a tier resolves one, request.model is left
+  // unset and the AgentManager applies its default — the parent session's model
+  // (agents.inheritParentModel, default on) or the static config default.
   const tier = isModelTier(args.tier) ? args.tier : undefined;
   const tierModel =
     tier && runner === "pi" && typeof args.model !== "string"
@@ -729,9 +738,7 @@ const runRequest = (
       ? { model: args.model }
       : tierModel
         ? { model: tierModel }
-        : inheritedModel
-          ? { model: inheritedModel }
-          : {}),
+        : {}),
     ...(thinking ? { thinking } : {}),
     ...(tools ? { tools } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
