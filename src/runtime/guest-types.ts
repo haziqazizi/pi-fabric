@@ -20,6 +20,7 @@ interface FabricAgentRequest {
   runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
+  tier?: "small" | "medium" | "big";
   thinking?: FabricThinking;
   tools?: string[];
   timeoutMs?: number;
