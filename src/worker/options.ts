@@ -44,6 +44,7 @@ export const parseWorkerOptions = (
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   const maxTokens = optional(args, "max-tokens");
+  const maxSchemaRetries = optional(args, "max-schema-retries");
   const runnerSessionId = optional(args, "runner-session-id");
   const mainAgentId = optional(args, "main-agent-id");
   const runner = required(args, "runner");
@@ -88,5 +89,8 @@ export const parseWorkerOptions = (
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
     ...(maxTokens ? { maxTokens: Number(maxTokens) } : {}),
+    ...(maxSchemaRetries !== undefined
+      ? { maxSchemaRetries: Number(maxSchemaRetries) }
+      : {}),
   };
 };

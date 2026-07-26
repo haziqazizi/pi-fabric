@@ -618,6 +618,75 @@ const main = async (): Promise<void> => {
     }
   };
 
+  // ---- Bounded structured-output repair state -----------------------------
+  // Number of in-session re-prompts already issued when a schema run settled
+  // without schema-valid output. Bounded by maxSchemaRetries.
+  const maxSchemaRetries =
+    options.schemaFile && schema ? Math.max(0, options.maxSchemaRetries ?? 0) : 0;
+  let schemaRetries = 0;
+  let parsedSchema: Record<string, unknown> | undefined;
+  const loadSchemaObject = (): Record<string, unknown> | undefined => {
+    if (parsedSchema) return parsedSchema;
+    if (!schema) return undefined;
+    try {
+      parsedSchema = JSON.parse(schema) as Record<string, unknown>;
+      return parsedSchema;
+    } catch {
+      return undefined;
+    }
+  };
+  const tryParseStructured = (text: string): unknown => {
+    try {
+      return parseStructuredValue(text);
+    } catch {
+      return undefined;
+    }
+  };
+  const strictJson = (text: string): unknown => {
+    const trimmed = text.trim();
+    if (!trimmed) return undefined;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
+  };
+  // Lenient current-value probe used to decide whether another repair turn is
+  // worthwhile: a runner-emitted value if present, else any JSON we can recover
+  // from the assistant text so far.
+  const isSchemaSatisfied = (): boolean => {
+    const validator = loadSchemaObject();
+    if (!validator) return true; // schema unreadable => nothing enforceable to repair
+    const value = record.value !== undefined ? record.value : tryParseStructured(record.text);
+    return value !== undefined && Value.Check(validator, value);
+  };
+  const schemaRepairPrompt = schema
+    ? `Your previous response did not contain valid JSON matching the required schema. Reply now with ONLY the JSON value matching this schema — no explanation, no commentary, no Markdown code fences, nothing else:\n${schema}`
+    : "";
+  // Re-prompt the SAME live pi session to emit schema-valid output. Returns true
+  // when a repair turn was issued (the caller must then keep the child open).
+  // Pi's structured-output mechanism is the final assistant message — there is no
+  // separate structured-output tool to restrict the turn to — so the repair
+  // prompt constrains the model to text-only JSON. Runners other than pi are not
+  // re-prompted here and instead rely on the host-side extraction performed at
+  // finalization (the claude runner integration is intentionally not deepened).
+  const maybeRequestSchemaRepair = (): boolean => {
+    if (options.runner !== "pi") return false;
+    if (!schema || maxSchemaRetries <= 0) return false;
+    if (terminalStatus || sawAgentError) return false;
+    if (schemaRetries >= maxSchemaRetries) return false;
+    if (isSchemaSatisfied()) return false;
+    if (!child.stdin || child.stdin.writableEnded || child.stdin.destroyed) return false;
+    schemaRetries += 1;
+    emitLifecycle("pi.schema_repair", { attempt: schemaRetries, maxAttempts: maxSchemaRetries });
+    try {
+      child.stdin.write(`${JSON.stringify({ type: "follow_up", message: schemaRepairPrompt })}\n`);
+    } catch {
+      return false;
+    }
+    return true;
+  };
+
   const processEvent = (line: string): void => {
     if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
     if (!line.trim()) return;
@@ -733,6 +802,11 @@ const main = async (): Promise<void> => {
     if (event.type === "agent_settled") {
       emitLifecycle("pi.agent_settled");
       if (!retryPending) {
+        // Bounded structured-output repair: if this run carries a schema and the
+        // model has not produced schema-valid output, re-prompt the same session
+        // (up to maxSchemaRetries) instead of letting the one-shot child close.
+        // A repair turn keeps stdin open; the next agent_settled re-evaluates.
+        if (maybeRequestSchemaRepair()) return;
         // Pull controls that landed with the final stream events before deciding
         // whether this one-shot child can close. A queued compact keeps stdin
         // open until its correlated response and compaction_end are observed.
@@ -990,26 +1064,72 @@ const main = async (): Promise<void> => {
         : `${options.runner === "claude" ? "Claude" : "Pi"} exited with code ${exitCode ?? "unknown"}`);
   }
   if (record.status === "completed" && options.schemaFile) {
+    let validator: Record<string, unknown> | undefined;
     try {
-      const schema = JSON.parse(fs.readFileSync(options.schemaFile, "utf8")) as Record<
+      validator = JSON.parse(fs.readFileSync(options.schemaFile, "utf8")) as Record<
         string,
         unknown
       >;
-      const value = record.value ?? parseStructuredValue(record.text);
-      if (!Value.Check(schema, value)) {
-        const errors = [...Value.Errors(schema, value)]
-          .slice(0, 5)
-          .map((error) => error.message)
-          .join("; ");
-        throw new Error(errors || "value does not match schema");
-      }
-      record.value = value;
     } catch (error) {
+      // The schema file itself is unreadable/invalid: treat as terminal
+      // noncompliance so the run does not silently return unvalidated output.
       record.status = "failed";
+      record.errorCode = "schema_noncompliance";
       const reason = error instanceof Error ? error.message : String(error);
-      const output = record.text.trim();
-      const snippet = output.slice(0, 200);
-      record.error = `Structured agent output was invalid: ${reason}${snippet ? ` (output: ${snippet}${output.length > 200 ? "…" : ""})` : ""}`;
+      record.error = `Structured agent output could not be validated: ${reason}`;
+    }
+    if (validator && record.status === "completed") {
+      // Phase 1 — the model complied. Prefer output emitted natively through the
+      // runner's structured-output mechanism (record.value); otherwise accept the
+      // final assistant message when it is itself exactly the JSON value. Neither
+      // path is flagged: this is clean compliance.
+      const native = record.value;
+      const strict = strictJson(record.text);
+      let accepted: unknown;
+      let recovered = false;
+      if (native !== undefined && Value.Check(validator, native)) {
+        accepted = native;
+      } else if (strict !== undefined && Value.Check(validator, strict)) {
+        accepted = strict;
+      } else {
+        // Phase 2 — STRICT EXTRACTION FALLBACK. Bounded in-session repair is
+        // already exhausted by the time we reach finalization. Make one host-side
+        // attempt to salvage a schema-valid JSON value embedded in the assistant's
+        // prose (fenced block or balanced span). On success we use it but flag the
+        // record so callers know it was recovered, not emitted cleanly.
+        const extracted = tryParseStructured(record.text);
+        if (extracted !== undefined && Value.Check(validator, extracted)) {
+          accepted = extracted;
+          recovered = true;
+        }
+      }
+      if (accepted !== undefined) {
+        record.value = accepted;
+        if (recovered) {
+          record.warning =
+            "Structured output was not emitted cleanly; the host recovered a schema-valid JSON value from the assistant text.";
+        }
+      } else {
+        // Phase 3 — NON-RECOVERABLE NONCOMPLIANCE. The run was given a schema,
+        // re-prompted up to maxSchemaRetries times, and host-side extraction also
+        // failed. Fail with the distinct, terminal error code "schema_noncompliance".
+        // This is terminal by design: the manager must NOT retry it (a fresh run
+        // would just reproduce the failure at full token cost) — see
+        // AgentManager.#retryStartup for the enforcement.
+        const candidate = native !== undefined ? native : strict;
+        const errors =
+          candidate !== undefined
+            ? [...Value.Errors(validator, candidate)]
+                .slice(0, 5)
+                .map((error) => error.message)
+                .join("; ")
+            : "no JSON value found in the agent output";
+        record.status = "failed";
+        record.errorCode = "schema_noncompliance";
+        const output = record.text.trim();
+        const snippet = output.slice(0, 200);
+        record.error = `Structured agent output was invalid after ${schemaRetries} repair attempt${schemaRetries === 1 ? "" : "s"}: ${errors || "value does not match schema"}${snippet ? ` (output: ${snippet}${output.length > 200 ? "…" : ""})` : ""}`;
+      }
     }
   }
   delete record.currentTool;

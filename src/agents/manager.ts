@@ -589,7 +589,9 @@ export class AgentManager {
         path.join(runDirectory, "nested"),
         "--steer-file",
         steerFile,
-        ...(schemaFile ? ["--schema-file", schemaFile] : []),
+        ...(schemaFile
+          ? ["--schema-file", schemaFile, "--max-schema-retries", String(this.config.maxSchemaRetries)]
+          : []),
         ...(branch ? ["--branch", branch] : []),
         ...(worktree ? ["--worktree", worktree] : []),
       ];
@@ -921,6 +923,13 @@ export class AgentManager {
     record: AgentRunRecord,
     deadline: number,
   ): Promise<boolean> {
+    // Schema noncompliance after bounded repair is terminal by design. When a run
+    // is given a JSON schema, the worker already re-prompts the same live session
+    // up to agents.maxSchemaRetries times and then tries a host-side extraction of
+    // the assistant text before failing with errorCode "schema_noncompliance". A
+    // fresh run would deterministically reproduce that failure at full token cost,
+    // so this — the only retry path in the manager — must never retry it.
+    if (record.errorCode === "schema_noncompliance") return false;
     if (
       managed.runner !== "pi" ||
       managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
