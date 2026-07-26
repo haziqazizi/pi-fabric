@@ -8,6 +8,7 @@ import {
   type FabricExecutionTraceV1,
 } from "./audit/trace.js";
 import { FabricActivityStore } from "./activity/store.js";
+import { FabricJournalStore } from "./journal/store.js";
 import type {
   FabricActivityEventInput,
   FabricActivityItemInput,
@@ -132,6 +133,7 @@ export interface FabricExecutionOptions {
   context: ExtensionContext;
   tokenBudget?: number;
   maxAgentCalls?: number;
+  journalKey?: string;
   display?: FabricRunDisplay;
   onPartial(snapshot: FabricExecutionPartial): void;
 }
@@ -287,6 +289,12 @@ export class FabricExecutionService {
       }
       if (event.type === "call_end") emit();
     };
+    // Opt-in only. With no journalKey the store is absent and every downstream
+    // hook (replay lookup, determinism guard) is a no-op, keeping default runs
+    // exactly backward compatible.
+    const journal = options.journalKey
+      ? new FabricJournalStore(options.context.cwd, options.journalKey)
+      : undefined;
     const baseContext = {
       cwd: options.context.cwd,
       signal: options.signal,
@@ -294,6 +302,7 @@ export class FabricExecutionService {
       nestedToolCallId: `${options.parentToolCallId}_metadata`,
       extensionContext: options.context,
       update,
+      ...(journal ? { journal } : {}),
     };
     // Start known orchestration programs with the longer deadline. Calls
     // reached through generic or computed refs are classified again at the
@@ -660,6 +669,7 @@ export class FabricExecutionService {
           ...(checked.javascript ? { transpiledCode: checked.javascript } : {}),
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
+          ...(options.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
         },
       );

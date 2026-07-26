@@ -125,6 +125,8 @@ export interface AgentRunRecord {
   nestedAgents?: AgentRunRecord[];
   pendingMessages?: { steering: string[]; followUp: string[] };
   compaction?: AgentCompactionStatus;
+  /** Set when this completed result was replayed from the content-keyed journal. */
+  replayed?: boolean;
 }
 
 export interface AgentRunResult extends AgentRunRecord {

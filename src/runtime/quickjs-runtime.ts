@@ -22,6 +22,10 @@ export interface FabricSandboxOptions {
   maxLogChars?: number;
   strings?: Record<string, string>;
   tokenBudget?: number;
+  // When present (journaled replay is active) the guest prelude bans the
+  // nondeterministic globals that would make replay unsound. Absent by default,
+  // so unjournaled runs keep Math.random / Date.now / new Date() untouched.
+  journalKey?: string;
   signal?: AbortSignal;
   minimumTimeoutMsForHostCall?(
     ref: string,
@@ -752,6 +756,30 @@ globalThis.gate = gate;
 })();
 `;
 
+// Scoped determinism guard, evaluated in the guest only when a journalKey is
+// active. Journaled replay is only sound if the program produces the same
+// agent calls on every run, so the nondeterministic sources — Math.random,
+// Date.now, and a zero-argument new Date()/Date() (which read the wall clock) —
+// are made to throw. Explicit values (e.g. new Date(isoString)) still work;
+// pass any needed timestamp/randomness in via the strings parameter. This
+// source is shared with the Node process child so both runtimes ban the same
+// globals identically.
+const DETERMINISM_GUARD = `
+(() => {
+const __message = "nondeterminism breaks journaled replay - pass values in via strings";
+globalThis.Math.random = () => { throw new Error(__message); };
+const __OriginalDate = globalThis.Date;
+function GuardedDate(...args) {
+  if (args.length === 0) throw new Error(__message);
+  return Reflect.construct(__OriginalDate, args, new.target ? new.target : GuardedDate);
+}
+GuardedDate.prototype = __OriginalDate.prototype;
+Object.setPrototypeOf(GuardedDate, __OriginalDate);
+GuardedDate.now = () => { throw new Error(__message); };
+globalThis.Date = GuardedDate;
+})();
+`;
+
 const formatValue = (value: unknown): string => {
   if (typeof value === "string") return value;
   if (value instanceof Error) return value.stack ?? value.message;
@@ -999,6 +1027,20 @@ export class QuickJsRuntime {
         };
       }
       setupResult.value.dispose();
+
+      if (options.journalKey !== undefined) {
+        const guardResult = context.evalCode(
+          DETERMINISM_GUARD,
+          "pi-fabric-determinism-guard.js",
+        );
+        if (guardResult.error) {
+          const error = formatValue(context.dump(guardResult.error));
+          guardResult.error.dispose();
+          abortHostCalls(error);
+          return { value: undefined, logs, terminationReason: "runtime_error", error };
+        }
+        guardResult.value.dispose();
+      }
 
       executionGate = context.newPromise();
       context.setProp(context.global, "__fabricExecutionGate", executionGate.handle);

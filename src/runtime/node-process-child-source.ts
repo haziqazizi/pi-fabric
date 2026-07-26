@@ -4,6 +4,25 @@ import vm from "node:vm";
 const pending = new Map();
 let nextCallId = 0;
 
+// Scoped determinism guard, run in the guest context only when the fabric_exec
+// call opted into journaled replay (message.journalKey present). Replay is only
+// sound if the program makes the same agent calls every run, so the wall-clock
+// / entropy sources are banned. Kept byte-for-byte equivalent to the QuickJS
+// DETERMINISM_GUARD so both runtimes behave identically. No journalKey means
+// this never runs and Math.random / Date.now / new Date() are untouched.
+const __determinismGuardSource = [
+  "(() => {",
+  "const __m = 'nondeterminism breaks journaled replay - pass values in via strings';",
+  "globalThis.Math.random = () => { throw new Error(__m); };",
+  "const __OriginalDate = globalThis.Date;",
+  "function GuardedDate(...args) { if (args.length === 0) throw new Error(__m); return Reflect.construct(__OriginalDate, args, new.target ? new.target : GuardedDate); }",
+  "GuardedDate.prototype = __OriginalDate.prototype;",
+  "Object.setPrototypeOf(GuardedDate, __OriginalDate);",
+  "GuardedDate.now = () => { throw new Error(__m); };",
+  "globalThis.Date = GuardedDate;",
+  "})();",
+].join("\n");
+
 const send = (message) => {
   if (process.connected) process.send?.(message);
 };
@@ -69,6 +88,11 @@ const run = async (message) => {
 
   try {
     vm.runInContext(message.setup, context, { filename: "pi-fabric-setup.js" });
+    if (message.journalKey !== undefined) {
+      vm.runInContext(__determinismGuardSource, context, {
+        filename: "pi-fabric-determinism-guard.js",
+      });
+    }
     const promise = vm.runInContext(message.code + "\n__piFabricMain()", context, {
       filename: "pi-fabric-guest.js",
     });

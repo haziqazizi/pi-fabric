@@ -128,6 +128,12 @@ export const createFabricExecTool = (
           description: "Optional agent-call cap, bounded by Fabric configuration",
         }),
       ),
+      journalKey: Type.Optional(
+        Type.String({
+          description:
+            "Opt-in content-keyed replay key. Re-running with the same journalKey replays already-completed agent() / agents.run results from .pi/fabric/journal and only pays for new or changed calls. Requires deterministic code (Math.random, Date.now, and no-arg Date() are disabled while a journalKey is active).",
+        }),
+      ),
       display: Type.Optional(
         Type.Object(
           {
@@ -650,6 +656,7 @@ export const createFabricExecTool = (
         context,
         ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
         ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
+        ...(params.journalKey !== undefined ? { journalKey: params.journalKey } : {}),
         ...(params.display
           ? {
               display: {

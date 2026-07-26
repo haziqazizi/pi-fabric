@@ -46,7 +46,9 @@ import type {
   AgentRunRequest,
   AgentRunResult,
   AgentSessionSeed,
+  AgentUsage,
 } from "../agents/types.js";
+import type { FabricJournalCallKeyInput } from "../journal/store.js";
 import { isFabricThinking } from "../thinking.js";
 import { isModelTier, resolveTier, type TierCandidate } from "../agents/tiers.js";
 import { AgentTranscriptReader, recentTranscriptTools } from "../ui/transcript.js";
@@ -742,6 +744,36 @@ const runRequest = (
   };
 };
 
+const ZERO_AGENT_USAGE: AgentUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0,
+};
+
+// The content that identifies a blocking one-shot run for the journal: the
+// resolved request, not its position in the program. Model is normalized to ""
+// when the runner default is used so a hit is independent of whether the model
+// was inherited or written out explicitly.
+const journalKeyInput = (request: AgentRunRequest): FabricJournalCallKeyInput => ({
+  prompt: request.task,
+  model: request.model ?? "",
+  runner: request.runner ?? "pi",
+  ...(request.schema !== undefined ? { schema: request.schema } : {}),
+  ...(request.tools !== undefined ? { tools: request.tools } : {}),
+});
+
+// Usage accounting choice: a replayed run reports zero usage so re-running a
+// journaled program never double-counts tokens or cost already paid on the
+// original live run. `replayed` records the provenance without changing the
+// completed result payload the workflow/agent surface returns.
+const replayedRun = (cached: AgentRunResult): AgentRunResult => ({
+  ...cached,
+  usage: ZERO_AGENT_USAGE,
+  replayed: true,
+});
+
 const handoffTask = (args: Record<string, unknown>): string => {
   const task = typeof args.task === "string" ? args.task.trim() : "";
   const lines = [
@@ -1125,10 +1157,28 @@ export class AgentsProvider implements FabricProvider {
   ): Promise<unknown> {
     switch (actionName) {
       case "run": {
-        const handle = await this.manager.spawn(
-          runRequest(args, context, this.manager),
-          context.signal,
-        );
+        const request = runRequest(args, context, this.manager);
+        // Content-keyed journaled replay, opt-in via the fabric_exec journalKey.
+        // Only blocking one-shot runs (agents.run and the workflow agent()
+        // surface, which funnels through this same case) participate — spawn,
+        // actors, and detached flows never journal. Reserve the entry key from
+        // the call's content (never its position) so inserting or reordering
+        // other calls cannot invalidate this entry.
+        const reservation = context.journal?.reserve(journalKeyInput(request));
+        if (reservation) {
+          const cached = context.journal!.read<AgentRunResult>(reservation.entryKey);
+          if (cached) {
+            context.activity?.({
+              type: "entity",
+              id: cached.id,
+              kind: "agent",
+              name: cached.name,
+            });
+            context.update(`Agent ${cached.name} replayed from journal`);
+            return replayedRun(cached);
+          }
+        }
+        const handle = await this.manager.spawn(request, context.signal);
         this.participants.scheduleRefresh();
         context.activity?.({
           type: "entity",
@@ -1139,13 +1189,19 @@ export class AgentsProvider implements FabricProvider {
         context.update(
           `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
-        return waitWithProgress(
+        const result = await waitWithProgress(
           this.manager,
           this.#transcripts,
           handle.id,
           context,
           this.nestedToolsEnabled,
         );
+        // Only completed results are journaled; FAILED / stopped / timed_out
+        // runs are never persisted so a later run retries them live.
+        if (reservation && result.status === "completed") {
+          context.journal!.write(reservation.entryKey, result);
+        }
+        return result;
       }
       case "handoff":
         return this.handoff(args, context);

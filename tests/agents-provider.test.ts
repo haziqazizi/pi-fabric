@@ -23,6 +23,8 @@ import type { FabricInvocationContext } from "../src/protocol.js";
 import { AgentsProvider } from "../src/providers/agents-provider.js";
 import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import { AgentManager } from "../src/agents/manager.js";
+import type { AgentRunResult } from "../src/agents/types.js";
+import { FabricJournalStore } from "../src/journal/store.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
@@ -756,6 +758,85 @@ describe("AgentsProvider runner support", () => {
       context,
     )) as { runner: string };
     expect(actor.runner).toBe("claude");
+  });
+});
+
+describe("AgentsProvider journaled replay", () => {
+  const runArgs = { task: "return a short result", name: "j-agent", transport: "process" };
+
+  it("journals a completed run and replays it without spawning again", async () => {
+    const { provider, root } = setup();
+    const journalRoot = path.join(root, "journal-project");
+
+    const first = (await provider.invoke("run", runArgs, {
+      ...context,
+      journal: new FabricJournalStore(journalRoot, "orch-1"),
+    })) as AgentRunResult;
+    expect(first.status).toBe("completed");
+    expect(first.replayed).toBeUndefined();
+    const runsAfterFirst = fs.readdirSync(path.join(root, "runs")).length;
+
+    // A fresh store instance models a second execution of the same program.
+    const second = (await provider.invoke("run", runArgs, {
+      ...context,
+      journal: new FabricJournalStore(journalRoot, "orch-1"),
+    })) as AgentRunResult;
+
+    expect(second.replayed).toBe(true);
+    expect(second.id).toBe(first.id);
+    expect(second.text).toBe(first.text);
+    // Replayed runs report zero usage so a re-run never double-counts cost.
+    expect(second.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+    // No new agent process was spawned for the replay.
+    expect(fs.readdirSync(path.join(root, "runs")).length).toBe(runsAfterFirst);
+  });
+
+  it("misses and runs live when the prompt changes", async () => {
+    const { provider, root } = setup();
+    const journalRoot = path.join(root, "journal-project");
+
+    const original = (await provider.invoke("run", runArgs, {
+      ...context,
+      journal: new FabricJournalStore(journalRoot, "orch-1"),
+    })) as AgentRunResult;
+
+    const changed = (await provider.invoke(
+      "run",
+      { ...runArgs, task: "return a different result" },
+      { ...context, journal: new FabricJournalStore(journalRoot, "orch-1") },
+    )) as AgentRunResult;
+
+    expect(changed.replayed).toBeUndefined();
+    expect(changed.id).not.toBe(original.id);
+  });
+
+  it("never journals a failed run, so a re-run dispatches live again", async () => {
+    const { provider, root } = setup();
+    const journalRoot = path.join(root, "journal-project");
+    const failArgs = { task: "FAIL_DIRECTIVE please", name: "j-fail", transport: "process" };
+
+    const first = (await provider.invoke("run", failArgs, {
+      ...context,
+      journal: new FabricJournalStore(journalRoot, "orch-1"),
+    })) as AgentRunResult;
+    expect(first.status).toBe("failed");
+
+    const second = (await provider.invoke("run", failArgs, {
+      ...context,
+      journal: new FabricJournalStore(journalRoot, "orch-1"),
+    })) as AgentRunResult;
+    expect(second.replayed).toBeUndefined();
+    expect(second.status).toBe("failed");
+    expect(second.id).not.toBe(first.id);
+    // Nothing was persisted under the journal key.
+    expect(fs.existsSync(path.join(journalRoot, ".pi", "fabric", "journal", "orch-1"))).toBe(false);
+  });
+
+  it("leaves runs unjournaled when no journalKey is active", async () => {
+    const { provider, root } = setup();
+    const result = (await provider.invoke("run", runArgs, context)) as AgentRunResult;
+    expect(result.replayed).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "journal-project"))).toBe(false);
   });
 });
 
