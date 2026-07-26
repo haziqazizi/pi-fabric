@@ -61,11 +61,22 @@ interface FabricPrewalkConfig {
   alwaysRearm: boolean;
 }
 
+/**
+ * Explicit user mapping from a capability tier to a concrete model key.
+ * Overrides the vendor-neutral auto-ranking in src/agents/tiers.ts.
+ */
+export interface FabricModelTierOverrides {
+  small?: string;
+  medium?: string;
+  big?: string;
+}
+
 export interface FabricAgentConfig {
   enabled: boolean;
   runner: FabricAgentRunner;
   transport: FabricAgentTransport;
   model?: string;
+  tiers?: FabricModelTierOverrides;
   claude: FabricClaudeRunnerConfig;
   thinking: FabricThinking;
   maxConcurrent: number;
@@ -477,6 +488,14 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const memoryIndexDir = stringValue(memory.indexDir);
   const prewalkModel = stringValue(prewalk.model);
   const agentModel = stringValue(agents.model);
+  const tierOverridesInput = objectValue(agents.tiers);
+  const tierOverrides: FabricModelTierOverrides = {};
+  const tierSmall = stringValue(tierOverridesInput.small);
+  const tierMedium = stringValue(tierOverridesInput.medium);
+  const tierBig = stringValue(tierOverridesInput.big);
+  if (tierSmall) tierOverrides.small = tierSmall;
+  if (tierMedium) tierOverrides.medium = tierMedium;
+  if (tierBig) tierOverrides.big = tierBig;
   const claudeBinary = stringValue(claude.binary);
   const claudeModel = stringValue(claude.model);
   const agentThinking = thinkingValue(agents.thinking, DEFAULT_FABRIC_CONFIG.agents.thinking);
@@ -581,6 +600,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       runner: runnerValue(agents.runner, DEFAULT_FABRIC_CONFIG.agents.runner),
       transport: transportValue(agents.transport, DEFAULT_FABRIC_CONFIG.agents.transport),
       ...(agentModel ? { model: agentModel } : {}),
+      ...(Object.keys(tierOverrides).length > 0 ? { tiers: tierOverrides } : {}),
       claude: {
         binary: claudeBinary ?? DEFAULT_FABRIC_CONFIG.agents.claude.binary,
         ...(claudeModel ? { model: claudeModel } : {}),

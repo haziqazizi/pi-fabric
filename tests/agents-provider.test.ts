@@ -50,11 +50,12 @@ const context: FabricInvocationContext = {
 const setup = (
   peers: FabricPeerInfo[] = [],
   members: FabricParticipantInfo[] = [],
+  agentsConfig = DEFAULT_FABRIC_CONFIG.agents,
 ) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-  const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+  const agents = new AgentManager(process.cwd(), agentsConfig, {
     workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
     claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
     runRoot: path.join(root, "runs"),
@@ -607,6 +608,87 @@ describe("AgentsProvider runner support", () => {
       status: "completed",
       owner: "agent",
     });
+  });
+
+  // Invented vendors/ids only — proves tier resolution is model-agnostic.
+  const tierCatalog = [
+    { provider: "acme", id: "foo-mini", cost: { output: 1, input: 1, cacheRead: 0, cacheWrite: 0 } },
+    { provider: "zorp", id: "bar-core", cost: { output: 5, input: 5, cacheRead: 0, cacheWrite: 0 } },
+    { provider: "quux", id: "baz-large", cost: { output: 20, input: 20, cacheRead: 0, cacheWrite: 0 } },
+  ];
+  const catalogContext = (
+    extra: Partial<Record<string, unknown>> = {},
+  ): FabricInvocationContext => ({
+    ...context,
+    extensionContext: {
+      modelRegistry: { getAvailable: () => tierCatalog },
+      ...extra,
+    } as unknown as ExtensionContext,
+  });
+  const resolvedModel = async (
+    provider: AgentsProvider,
+    ctx: FabricInvocationContext,
+    args: Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    const handle = (await provider.invoke("spawn", args, ctx)) as { id: string };
+    const result = (await provider.invoke("wait", { id: handle.id }, ctx)) as {
+      model?: string;
+    };
+    return result.model;
+  };
+
+  it("resolves a tier to a catalog model by price-first ranking at dispatch", async () => {
+    const { provider } = setup();
+    const ctx = catalogContext();
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "small", transport: "process" })).toBe(
+      "acme/foo-mini",
+    );
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "medium", transport: "process" })).toBe(
+      "zorp/bar-core",
+    );
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "big", transport: "process" })).toBe(
+      "quux/baz-large",
+    );
+  });
+
+  it("prefers an explicit model over a tier when both are given", async () => {
+    const { provider } = setup();
+    const ctx = catalogContext();
+    expect(
+      await resolvedModel(provider, ctx, {
+        task: "t",
+        model: "custom/explicit",
+        tier: "small",
+        transport: "process",
+      }),
+    ).toBe("custom/explicit");
+  });
+
+  it("prefers a tier over the caller's current default model", async () => {
+    const { provider } = setup();
+    const ctx = catalogContext({ model: { provider: "novau", id: "default-thing" } });
+    // Without a tier the default is inherited; with a tier the tier wins.
+    expect(await resolvedModel(provider, ctx, { task: "t", transport: "process" })).toBe(
+      "novau/default-thing",
+    );
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "big", transport: "process" })).toBe(
+      "quux/baz-large",
+    );
+  });
+
+  it("lets an explicit agents.tiers config override win over auto-ranking", async () => {
+    const { provider } = setup([], [], {
+      ...DEFAULT_FABRIC_CONFIG.agents,
+      tiers: { small: "override/tiny" },
+    });
+    const ctx = catalogContext();
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "small", transport: "process" })).toBe(
+      "override/tiny",
+    );
+    // medium has no override, so it still auto-ranks from the catalog.
+    expect(await resolvedModel(provider, ctx, { task: "t", tier: "medium", transport: "process" })).toBe(
+      "zorp/bar-core",
+    );
   });
 
   it("attaches the final preview for actors that settle before the first poll", async () => {

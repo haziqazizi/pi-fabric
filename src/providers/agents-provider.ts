@@ -48,6 +48,7 @@ import type {
   AgentSessionSeed,
 } from "../agents/types.js";
 import { isFabricThinking } from "../thinking.js";
+import { isModelTier, resolveTier, type TierCandidate } from "../agents/tiers.js";
 import { AgentTranscriptReader, recentTranscriptTools } from "../ui/transcript.js";
 
 const runProperties = {
@@ -65,6 +66,12 @@ const runProperties = {
   model: {
     type: "string",
     description: "Pi provider/id key or Claude claude/<runtime-value> key from agents.models().",
+  },
+  tier: {
+    type: "string",
+    enum: ["small", "medium", "big"],
+    description:
+      "Vendor-neutral capability tier resolved against the configured model catalog by price-first ranking. Ignored when model is set (explicit model wins).",
   },
   thinking: {
     type: "string",
@@ -657,6 +664,31 @@ const longerTimeoutOverride = (
   return effective > manager.config.timeoutMs ? effective : undefined;
 };
 
+// Build the tier-ranking catalog from the live model registry. Output price
+// per token (model.cost.output) is the primary ranking signal; models without
+// pricing fall through to vendor-neutral hint bands inside tiers.ts. Guarded so
+// a missing/partial registry (e.g. in tests) simply yields an empty catalog and
+// tier resolution falls back to the caller's current default model.
+const tierCandidates = (context: FabricInvocationContext): TierCandidate[] => {
+  try {
+    const registry = context.extensionContext?.modelRegistry;
+    const available =
+      typeof registry?.getAvailable === "function" ? registry.getAvailable() : [];
+    return available.map((model): TierCandidate => {
+      const outputPrice = (model as { cost?: { output?: unknown } }).cost?.output;
+      return {
+        provider: String(model.provider),
+        id: String(model.id),
+        ...(typeof outputPrice === "number" && Number.isFinite(outputPrice)
+          ? { outputPrice }
+          : {}),
+      };
+    });
+  } catch {
+    return [];
+  }
+};
+
 const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
@@ -679,6 +711,13 @@ const runRequest = (
     runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
       : undefined;
+  // Resolution precedence: explicit model > tier > current default. Tier only
+  // applies to the pi catalog and only when no explicit model was given.
+  const tier = isModelTier(args.tier) ? args.tier : undefined;
+  const tierModel =
+    tier && runner === "pi" && typeof args.model !== "string"
+      ? resolveTier(tier, tierCandidates(context), manager.config.tiers)
+      : undefined;
   return {
     task: String(args.task),
     runner,
@@ -686,9 +725,11 @@ const runRequest = (
     ...(transport ? { transport } : {}),
     ...(typeof args.model === "string"
       ? { model: args.model }
-      : inheritedModel
-        ? { model: inheritedModel }
-        : {}),
+      : tierModel
+        ? { model: tierModel }
+        : inheritedModel
+          ? { model: inheritedModel }
+          : {}),
     ...(thinking ? { thinking } : {}),
     ...(tools ? { tools } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
