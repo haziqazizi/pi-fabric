@@ -6,6 +6,38 @@ This fork layers two things on top of upstream: **runtime hardening** (tiering, 
 
 The design principles behind all of it live in the companion doctrine repo, **[designing-dynamic-workflows](https://github.com/haziqazizi/designing-dynamic-workflows)**.
 
+## Why this fork
+
+Upstream fabric answers *"how does the model orchestrate?"* — one `fabric_exec` tool, code instead of a stack of tool calls. This fork answers the operational questions that surface once you actually run it across many models and long sessions:
+
+- **Mixed models, no lock-in.** Pi runs many providers at many reasoning levels. Everything here is vendor-neutral: route cost with `tier: small|medium|big` (ranked by *price*, not a hardcoded model list), and reach for a cross-provider panel when one family's blind spots would cost you.
+- **Long runs that don't hurt.** Journaled replay (`journalKey`) means a crashed 50-item fan-out re-pays only for what changed; reserve-then-settle budgets close the concurrent-spawn overshoot that makes "just add more agents" expensive.
+- **Failures that don't lie.** Bounded schema repair turns "the model never emitted valid output" into a terminal, non-retried error instead of a silent stall; the quality helpers (`verify` / `gate` / …) return exhaustion *visibly* rather than dressing it up as success.
+- **Patterns that dodge the traps.** The skill library encodes verification-first patterns — refute-don't-confirm verify, cross-provider panels, the selection ladder, trajectory audits against the run transcript — so you aren't re-deriving the correlated-error antipatterns each time.
+
+Use this fork if you're running multi-agent work on Pi across mixed models and want cost control, resumability, and verification rigor — without coupling any of it to a specific provider.
+
+## How the pieces fit
+
+Three layers: the doctrine decides *whether and what shape*, the pattern library provides *executable templates*, and the hardened runtime provides *the API to run them*. The model reaches the patterns on demand — its always-on surface stays minimal.
+
+```mermaid
+flowchart TB
+  subgraph design["Design doctrine — whether / what shape"]
+    DOC["designing-dynamic-workflows<br/>six axes · selection ladder · gates · antipatterns"]
+  end
+  subgraph patterns["Pattern library — executable templates"]
+    PAT["skills/fabric-* · 11 patterns<br/>read on demand · no context flood"]
+  end
+  subgraph runtime["Hardened runtime — how, in code"]
+    RT["fabric_exec<br/>tiers · budgets · schema repair · journal · lint"]
+  end
+  DOC -->|routing table picks a pattern| PAT
+  PAT -->|template becomes a program| RT
+  DOC -->|custom work| RT
+  RT -->|only the return value re-enters the chat| OUT["conversation"]
+```
+
 ---
 
 ## Runtime improvements (`src/`)
