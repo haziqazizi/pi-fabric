@@ -38,7 +38,12 @@ describe("Fabric configuration", () => {
       fullCodeMode: false,
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
       approvals: { write: "auto", agent: "invalid", model: "anthropic/classifier" },
-      agents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "herdr" },
+      agents: {
+        maxConcurrent: 100,
+        maxPerExecution: 5_000,
+        transport: "herdr",
+        maxSchemaRetries: 99,
+      },
       capture: {
         keepVisible: ["fabric_exec", "custom", "custom"],
         defaultRisk: "invalid",
@@ -63,6 +68,7 @@ describe("Fabric configuration", () => {
     expect(config.agents.maxConcurrent).toBe(32);
     expect(config.agents.maxPerExecution).toBe(1_000);
     expect(config.agents.transport).toBe("herdr");
+    expect(config.agents.maxSchemaRetries).toBe(10);
     expect(config.capture.keepVisible).toEqual(["fabric_exec", "custom"]);
     expect(config.capture.defaultRisk).toBe("execute");
     expect(config.capture.risks).toMatchObject({ inspect: "read", mutate: "execute" });

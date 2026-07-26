@@ -103,6 +103,15 @@ export interface AgentRunRecord {
   text: string;
   value?: unknown;
   error?: string;
+  // Machine-readable, stable failure code for terminal outcomes that callers or
+  // the manager must branch on. Currently "schema_noncompliance" for a run that
+  // was given a JSON schema but never produced a schema-valid result even after
+  // bounded in-session repair and host-side extraction (see worker.ts).
+  errorCode?: string;
+  // Non-fatal advisory attached to an otherwise successful run — e.g. structured
+  // output that was recovered from the assistant text via host-side extraction
+  // rather than emitted natively by the runner's structured-output mechanism.
+  warning?: string;
   stderr?: string;
   exitCode?: number | null;
   usage: AgentUsage;
@@ -162,6 +171,9 @@ export interface AgentWorkerOptions {
   tools: string[];
   grantedRisks: string[];
   maxTokens?: number;
+  // Max number of in-session re-prompts the worker issues when a schema run ends
+  // without schema-valid structured output. Only meaningful when schemaFile is set.
+  maxSchemaRetries?: number;
   fabricExtensionPath?: string;
   model?: string;
   thinking?: string;

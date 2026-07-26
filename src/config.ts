@@ -77,6 +77,7 @@ export interface FabricAgentConfig {
   notifyOnComplete: boolean;
   budgetUsd: number;
   maxTokensPerChild: number;
+  maxSchemaRetries: number;
 }
 
 export interface FabricToolCaptureConfig {
@@ -230,6 +231,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     notifyOnComplete: true,
     budgetUsd: 0,
     maxTokensPerChild: 0,
+    maxSchemaRetries: 2,
   },
   capture: {
     enabled: true,
@@ -611,6 +613,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.agents.maxTokensPerChild,
         0,
         100_000_000,
+      ),
+      maxSchemaRetries: boundedInteger(
+        agents.maxSchemaRetries,
+        DEFAULT_FABRIC_CONFIG.agents.maxSchemaRetries,
+        0,
+        10,
       ),
     },
     capture: {

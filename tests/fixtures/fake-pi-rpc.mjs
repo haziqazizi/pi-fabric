@@ -42,11 +42,39 @@ const finishAttempt = (message, willRetry) => {
 };
 
 let started = false;
+// Schema-repair scenarios keep reading follow_up frames the worker sends when a
+// schema run settles without schema-valid output. `schemaMode` selects how each
+// re-prompt turn responds; `followUpCount` counts the repair turns received.
+let schemaMode = null;
+let followUpCount = 0;
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on("line", (line) => {
-  if (started || !line.trim()) return;
+  if (!line.trim()) return;
+  let command;
+  try {
+    command = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (started) {
+    // Only schema-repair scenarios react to later frames; everything else (the
+    // existing one-shot behaviors) ignores post-prompt input as before.
+    if (command.type !== "follow_up") return;
+    followUpCount += 1;
+    send({ type: "agent_start" });
+    if (schemaMode === "recover") {
+      // The model finally complies on the first repair turn.
+      schemaMode = null;
+      finishAttempt(successMessage(JSON.stringify({ answer: 42 })), false);
+    } else if (schemaMode === "noncompliance") {
+      // The model never emits JSON, no matter how many times it is re-prompted.
+      finishAttempt(successMessage(`Still no JSON here, attempt ${followUpCount}.`), false);
+    }
+    return;
+  }
+
   started = true;
-  const command = JSON.parse(line);
   const task = typeof command.message === "string" ? command.message : "";
 
   send({ type: "response", command: "prompt", success: true });
@@ -63,6 +91,30 @@ input.on("line", (line) => {
 
   if (task.includes("FAIL_PROVIDER")) {
     finishAttempt(providerFailure(), false);
+    return;
+  }
+
+  if (task.includes("SCHEMA_REPAIR_RECOVER")) {
+    // First turn is prose (no JSON); the worker must re-prompt the same session.
+    schemaMode = "recover";
+    finishAttempt(successMessage("I am thinking about your request."), false);
+    return;
+  }
+
+  if (task.includes("SCHEMA_NONCOMPLIANCE")) {
+    // Never emits JSON on any turn; bounded repair then host extraction both fail.
+    schemaMode = "noncompliance";
+    finishAttempt(successMessage("Here is a prose answer with no JSON at all."), false);
+    return;
+  }
+
+  if (task.includes("SCHEMA_EXTRACT_WARN")) {
+    // Emits schema-valid JSON, but wrapped in prose so it is not clean output:
+    // the host-side extraction fallback should recover it and flag a warning.
+    finishAttempt(
+      successMessage('Sure, here you go: {"answer": 7} — hope that helps!'),
+      false,
+    );
     return;
   }
 

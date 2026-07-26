@@ -514,6 +514,89 @@ describe("AgentManager", () => {
     expect(result.usage).toMatchObject({ input: 3, output: 4 });
   });
 
+  const answerSchema = {
+    type: "object",
+    properties: { answer: { type: "number" } },
+    required: ["answer"],
+    additionalProperties: false,
+  } as const;
+
+  it("repairs schema noncompliance by re-prompting the same session", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
+    fs.chmodSync(fakePi, 0o755);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("src/worker.ts"),
+      piBinary: fakePi,
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({
+      task: "SCHEMA_REPAIR_RECOVER",
+      transport: "process",
+      timeoutMs: 10_000,
+      schema: answerSchema,
+    });
+    expect(result.status).toBe("completed");
+    expect(result.value).toEqual({ answer: 42 });
+    expect(result.errorCode).toBeUndefined();
+    // Clean compliance (once repaired) carries no extraction warning.
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("recovers schema-valid output from prose via the host-side extraction fallback and flags it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
+    fs.chmodSync(fakePi, 0o755);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("src/worker.ts"),
+      piBinary: fakePi,
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({
+      task: "SCHEMA_EXTRACT_WARN",
+      transport: "process",
+      timeoutMs: 10_000,
+      schema: answerSchema,
+    });
+    expect(result.status).toBe("completed");
+    expect(result.value).toEqual({ answer: 7 });
+    expect(result.warning).toMatch(/recovered a schema-valid JSON value/);
+  });
+
+  it("fails schema noncompliance terminally with a distinct error code after bounded repair", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
+    fs.chmodSync(fakePi, 0o755);
+    // Override the knob to prove it flows manager -> worker: exactly one repair.
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, maxSchemaRetries: 1 };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath: path.resolve("src/worker.ts"),
+      piBinary: fakePi,
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({
+      task: "SCHEMA_NONCOMPLIANCE",
+      transport: "process",
+      timeoutMs: 10_000,
+      schema: answerSchema,
+    });
+    expect(result.status).toBe("failed");
+    expect(result.errorCode).toBe("schema_noncompliance");
+    expect(result.error).toMatch(/after 1 repair attempt:/);
+    // The run did real work (it produced turns), so it is not eligible for the
+    // manager's startup-only retry — schema noncompliance is terminal by design.
+    expect(result.turns).toBeGreaterThan(0);
+  });
+
   it("propagates the exact root Main identity into recursive child Pi", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
